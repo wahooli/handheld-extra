@@ -57,11 +57,17 @@ jobs:
       # A push made with GITHUB_TOKEN does not trigger other workflows, so the
       # build has to be dispatched explicitly. Documented GitHub behaviour, not
       # something a path filter can work around.
+      # Pass the bumped names. Without them `packages` falls back to its default
+      # of `all`, so a single bump rebuilt and republished all nine packages --
+      # nine pointless builds and a database rewritten for eight unchanged
+      # entries.
       - name: Build what was bumped
         if: steps.poll.outputs.bumped != '0'
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh workflow run build.yml --ref "${{ github.ref_name }}"
+        run: |
+          gh workflow run build.yml --ref "${{ github.ref_name }}" \
+            -f packages="${{ steps.poll.outputs.bumped_list }}"
 
       - name: Summary
         if: ${{ !cancelled() }}

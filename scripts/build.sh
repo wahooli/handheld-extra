@@ -37,6 +37,15 @@ all_packages() {
 # they contain, and the published package would be identical.
 changed_packages() {
     local ref="$1" p
+    # An initial push has no parent: GitHub passes the all-zero SHA as
+    # github.event.before. Diffing against it cannot work, and returning nothing
+    # would be wrong -- on a first push nothing has been published yet, so
+    # everything is genuinely new.
+    if [ -z "${ref}" ] || [ "${ref}" = "0000000000000000000000000000000000000000" ]; then
+        echo "no previous commit to diff against; treating every package as changed" >&2
+        all_packages
+        return 0
+    fi
     git rev-parse --verify "${ref}" >/dev/null 2>&1 || {
         echo "!! not a valid git ref: ${ref}" >&2; return 1; }
     for p in $(all_packages); do
