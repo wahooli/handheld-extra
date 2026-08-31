@@ -1,0 +1,182 @@
+# gamescope for ARM handhelds, packaged the way armada builds it.
+#
+# ── What this actually is ────────────────────────────────────────────────────
+#
+# Not Valve's gamescope with patches bolted on. The chain armada uses is:
+#
+#   OpenGamingCollective/gamescope   a fork of ValveSoftware/gamescope, branch
+#                                    `ogc`, where the handheld work lives
+#           ▼
+#   terrapkg terra-gamescope         Fedora packaging that builds that fork,
+#                                    versioned 137.<short_commit>
+#           ▼
+#   armada-packages/gamescope        injects 13 patches into Terra's spec
+#
+# We take the same source and the same patches, and skip Terra entirely since
+# its only role is Fedora packaging. Nothing here derives from Arch's gamescope
+# packaging beyond the dependency lists, which are facts about the software.
+#
+# ── Why not the 3.16.25 tag ──────────────────────────────────────────────────
+#
+# This package originally built ValveSoftware/gamescope at tag 3.16.25, which
+# looked reasonable and could not work: only 4 of armada's 13 patches applied,
+# and none of the 9 failures recovered with fuzz. They are written against the
+# fork, months ahead of that tag. Against the fork's `ogc` branch all 13 apply.
+#
+# ── Fuzz ─────────────────────────────────────────────────────────────────────
+#
+# Terra sets %global _default_patch_fuzz 2, and armada inherits it, so the patch
+# set is maintained against that tolerance rather than exact context. One patch
+# (0010, force-vulkan-realtime) currently needs fuzz 1. Applying at -F0 as the
+# other packages here do would reject it for a cosmetic offset, so this build
+# matches upstream's tolerance -- and says so when it uses it, because silent
+# fuzz is how a patch quietly stops doing what it says.
+#
+# Maintainer: Waltteri Hooli <1420194+wahooli@users.noreply.github.com>
+
+pkgname=gamescope
+# armada's published build, from ghcr.io/armada-os/armada-packages/gamescope,
+# with the dash swapped for a dot because pkgver forbids dashes. Tying the
+# version to their artifact rather than inventing one means `pacman -Q gamescope`
+# names exactly which armada build this is.
+pkgver=20260830.2c93e73c
+pkgrel=1
+pkgdesc='SteamOS session compositing window manager (OGC fork + armada handheld patches)'
+arch=(aarch64)
+url='https://github.com/OpenGamingCollective/gamescope'
+license=(
+  BSD-2-Clause
+  BSD-3-Clause
+  LicenseRef-Reshade
+)
+depends=(
+  glibc
+  libstdc++
+  libgcc
+  lcms2
+  libavif
+  libcap.so
+  libdecor
+  libdrm
+  libei
+  libinput
+  libpipewire-0.3.so
+  libx11
+  libxcb
+  libxcomposite
+  libxcursor
+  libxdamage
+  libxext
+  libxfixes
+  libxi
+  libxkbcommon.so
+  libxmu
+  libxrender
+  libxres
+  libxtst
+  libxxf86vm
+  luajit
+  pixman
+  sdl2
+  seatd
+  systemd-libs
+  vulkan-icd-loader
+  wayland
+  xcb-util-errors
+  xcb-util-wm
+  xorg-server-xwayland
+)
+makedepends=(
+  benchmark
+  cmake
+  git
+  glslang
+  meson
+  ninja
+  vulkan-headers
+  wayland-protocols
+  catch2
+)
+
+# branch, not a pinned commit: armada tracks the fork's tip and their patches
+# are maintained against it. Pinning here would drift from the patches instead
+# of with them. The fork's `ogc` HEAD is currently the same commit Terra pins,
+# so this matches armada's build exactly.
+#
+# The subprojects are the same set gamescope's meson wrap files expect.
+source=(
+  git+https://github.com/OpenGamingCollective/gamescope.git#branch=ogc
+  git+https://gitlab.freedesktop.org/emersion/libdisplay-info.git
+  git+https://gitlab.freedesktop.org/emersion/libliftoff.git
+  git+https://github.com/ValveSoftware/openvr.git
+  git+https://github.com/Joshua-Ashton/reshade.git
+  git+https://github.com/KhronosGroup/SPIRV-Headers.git
+  git+https://github.com/Joshua-Ashton/vkroots.git
+  git+https://gitlab.freedesktop.org/wlroots/wlroots.git
+)
+sha256sums=(SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP)
+
+# Filled from patch-set/ at parse time rather than listed by hand: armada
+# adds and removes patches and their numbering has gaps (there is no 0012), so a
+# hand-maintained list would drift out of step with what was fetched.
+_patches=()
+for _p in "${startdir}"/patch-set/*.patch; do
+  [ -e "${_p}" ] && _patches+=("$(basename "${_p}")")
+done
+unset _p
+
+prepare() {
+  cd gamescope
+
+  local p f fuzz applied=0 fuzzed=0
+  for p in "${_patches[@]}"; do
+    f="${startdir}/patch-set/${p}"
+    [ -f "${f}" ] || { echo "::  missing patch: ${p} (run scripts/fetch-patch-set.sh gamescope)"; return 1; }
+
+    # Exact first, then Terra's tolerance. Reporting which patches needed fuzz
+    # is the point: fuzz means the context moved, and a patch that needs more of
+    # it each release is one to check before it silently lands in the wrong place.
+    fuzz=
+    if patch -p1 --batch --forward -F0 --dry-run --quiet < "${f}" >/dev/null 2>&1; then
+      fuzz=0
+    elif patch -p1 --batch --forward -F2 --dry-run --quiet < "${f}" >/dev/null 2>&1; then
+      fuzz=2
+    else
+      echo "::  FAILED: ${p}"
+      echo "::  It does not apply to the fork's ogc branch even at fuzz 2."
+      echo "::  Either armada has rebased -- bump CURRENT in upstream.env and"
+      echo "::  re-run scripts/fetch-patch-set.sh gamescope -- or the fork"
+      echo "::  moved ahead of the patch set and armada has not caught up yet."
+      return 1
+    fi
+
+    patch -p1 --batch --forward -F"${fuzz}" --quiet < "${f}"
+    applied=$((applied + 1))
+    if [ "${fuzz}" != 0 ]; then
+      echo "::  applied WITH FUZZ ${fuzz}: ${p}"
+      fuzzed=$((fuzzed + 1))
+    fi
+  done
+  echo "::  applied ${applied} armada patches (${fuzzed} needed fuzz)"
+
+  # gamescope's subprojects come from the source array rather than the network,
+  # so meson is pointed at the already-cloned trees.
+  meson subprojects download
+  for submodule in src/reshade subprojects/{libdisplay-info,libliftoff,openvr,vkroots,wlroots} thirdparty/SPIRV-Headers; do
+    git submodule init "${submodule}"
+    git config submodule."${submodule}".url ../"${submodule##*/}"
+  done
+  git -c protocol.file.allow=always submodule update
+}
+
+build() {
+  arch-meson gamescope build \
+    -Dforce_fallback_for=glm,stb,libdisplay-info,libliftoff,vkroots \
+    -Dpipewire=enabled
+  meson compile -C build
+}
+
+package() {
+  DESTDIR="${pkgdir}" meson install -C build --skip-subprojects
+  install -Dm644 gamescope/LICENSE -t "${pkgdir}/usr/share/licenses/gamescope/"
+}

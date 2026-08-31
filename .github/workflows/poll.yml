@@ -1,0 +1,83 @@
+name: poll upstreams
+
+# Checks every package against its declared upstream and reports what is behind.
+#
+# When something is behind, it bumps it, commits, and dispatches a build. The
+# build workflow already opens an issue if that build fails, so failure has one
+# home rather than two.
+#
+# What made this safe was giving each package a declaration of how its version is
+# derived -- upstream tag through a sed, armada's BASE.env, or armada's published
+# OCI tag -- instead of assuming one rule fits all. A package that cannot be
+# bumped mechanically says so: hyprgrass sets AUTOBUMP=no because its pkgver is
+# composed with a pinned Hyprland version, and taking a new release without
+# checking which Hyprland the image ships builds a plugin for the wrong ABI.
+#
+# An issue is still raised here for a bump that FAILS -- a checksum that will not
+# refresh, a PKGBUILD that stops parsing -- because no build will happen to
+# report it.
+on:
+  schedule:
+    # Daily rather than the kernel's 6-hourly. These upstreams release on the
+    # order of weeks, and nothing here auto-builds, so a faster poll would only
+    # rewrite the same issue more often.
+    - cron: '23 6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: poll
+  cancel-in-progress: true
+
+jobs:
+  poll:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Check upstreams and bump
+        id: poll
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: ./scripts/poll-upstreams.sh --bump
+
+      - name: Commit the bumps
+        if: steps.poll.outputs.bumped != '0'
+        run: |
+          set -euo pipefail
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add packages
+          git commit -m "chore(packages): bump ${{ steps.poll.outputs.bumped_list }}"
+          git push
+
+      # A push made with GITHUB_TOKEN does not trigger other workflows, so the
+      # build has to be dispatched explicitly. Documented GitHub behaviour, not
+      # something a path filter can work around.
+      - name: Build what was bumped
+        if: steps.poll.outputs.bumped != '0'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run build.yml --ref "${{ github.ref_name }}"
+
+      - name: Summary
+        if: ${{ !cancelled() }}
+        run: |
+          set -euo pipefail
+          if [ -s .upstream-report.md ]; then
+            cat .upstream-report.md >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "Everything is up to date." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      # Only for what could NOT be bumped: AUTOBUMP=no packages needing a human,
+      # and bumps that failed outright. Successful bumps need no issue -- they
+      # produce a commit and a build, and the build reports its own failures.
+      - name: Report what needs a human
+        if: ${{ !cancelled() }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: ./scripts/update-upstream-issue.sh

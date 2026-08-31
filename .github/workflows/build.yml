@@ -1,0 +1,212 @@
+name: build
+
+# Builds only the packages that changed, and publishes them to [handheld-extra].
+#
+# The kernel repo has one thing to build and rebuilds it on any relevant change.
+# Here that would be wrong: seven packages tracking seven upstreams, where a
+# gamescope bump has nothing to say about wvkbd. `build.sh --changed` diffs the
+# package directories against the previous commit and builds the difference.
+on:
+  workflow_dispatch:
+    inputs:
+      packages:
+        description: 'Space-separated package names, or "all"'
+        type: string
+        default: all
+      skip_publish:
+        description: 'Build only; do not touch R2'
+        type: boolean
+        default: false
+  push:
+    branches: [main]
+    paths:
+      - 'packages/**'
+      - 'Dockerfile'
+      # Only the scripts that change WHAT gets built. `scripts/**` was too broad:
+      # editing publish-r2.sh or the poller started a runner that then found no
+      # changed package and exited -- harmless here, unlike the kernel repo where
+      # the same mistake cost fifty minutes, but still a run for nothing.
+      #
+      # bump-package.sh and the poller are deliberately absent: what they produce
+      # is a commit under packages/, and THAT is the trigger. Watching the script
+      # as well would build twice for one bump.
+      - 'scripts/build.sh'
+      - 'scripts/build-in-container.sh'
+      - 'scripts/makepkg-each.sh'
+      - 'scripts/fetch-patch-set.sh'
+      # Not repo.env (publishing identity, not build content) and not this file.
+      # check.yml validates both on every push in about a minute; use
+      # `gh workflow run build.yml` when a change here needs a real build.
+
+permissions:
+  contents: write
+  issues: write
+
+# Serialised against itself. Not against the kernel repo -- it does not need to
+# be, because that repo writes a different database. That separation is the
+# reason these are two repositories: publishing is a read-modify-write on one
+# database object with no locking, so two producers on one database would
+# silently lose packages.
+concurrency:
+  group: publish
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 120
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # build.sh --changed diffs against the previous commit, which has to
+          # actually be in the clone. The default fetch-depth of 1 has no parent
+          # and every run would rebuild everything.
+          fetch-depth: 2
+
+      - name: Cache key inputs
+        id: keys
+        run: echo "week=$(date -u +%Y-%U)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore builder image
+        id: imgcache
+        uses: actions/cache/restore@v6
+        with:
+          path: ~/.cache/builder-image.tar
+          key: builder-${{ hashFiles('Dockerfile') }}-${{ steps.keys.outputs.week }}
+
+      - name: Load or build the builder image
+        run: |
+          set -euo pipefail
+          if [ -f ~/.cache/builder-image.tar ]; then
+            docker load -i ~/.cache/builder-image.tar
+          else
+            docker build -t linux-handheld-builder:latest .
+            mkdir -p ~/.cache
+            docker save linux-handheld-builder:latest -o ~/.cache/builder-image.tar
+          fi
+
+      - name: Save builder image
+        if: ${{ !cancelled() && steps.imgcache.outputs.cache-hit != 'true' }}
+        continue-on-error: true
+        uses: actions/cache/save@v6
+        with:
+          path: ~/.cache/builder-image.tar
+          key: builder-${{ hashFiles('Dockerfile') }}-${{ steps.keys.outputs.week }}
+
+      - name: Install host tools
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          # No pacman on the runner. Both tools that needed it -- repo-add and
+          # vercmp -- run inside the builder container, whose pacman is the one
+          # that built these packages. Ubuntu ships 6.0.2 against Arch's 7.1.0,
+          # and that gap already cost the kernel repo a failed publish: 6.0.2
+          # does not know --include-sigs and treated the unknown option as the
+          # database filename.
+          sudo apt-get install -y -qq libarchive-tools unzip
+
+          # rclone from upstream, pinned, NOT from apt. Ubuntu 24.04 ships
+          # 1.60.1, an October 2022 build. Checksum-verified rather than piped
+          # from install.sh: this runs with the signing key and R2 credentials in
+          # the environment.
+          RCLONE_VER=v1.75.0
+          RCLONE_SHA=d0ad88ba4c8e285b7c9efa591e0ab643280a91741e13c27f3a9c0957ccfa5203
+          curl -fsSL --retry 3 -o /tmp/rclone.zip \
+            "https://github.com/rclone/rclone/releases/download/${RCLONE_VER}/rclone-${RCLONE_VER}-linux-arm64.zip"
+          echo "${RCLONE_SHA}  /tmp/rclone.zip" | sha256sum -c -
+          unzip -q -j /tmp/rclone.zip "*/rclone" -d /tmp
+          sudo install -m755 /tmp/rclone /usr/local/bin/rclone
+          rclone version | head -1
+
+      - name: Restore ccache
+        uses: actions/cache/restore@v6
+        with:
+          path: .ccache
+          key: ccache-${{ github.sha }}
+          restore-keys: ccache-
+
+      - name: Build
+        id: build
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = workflow_dispatch ]; then
+            if [ "${{ inputs.packages }}" = all ]; then
+              ./scripts/build.sh --all
+            else
+              # shellcheck disable=SC2086
+              ./scripts/build.sh ${{ inputs.packages }}
+            fi
+          else
+            ./scripts/build.sh --changed "${{ github.event.before }}"
+          fi
+
+      # Right after the build, before anything that can fail: actions/cache only
+      # writes in its post step, and post steps do not run when a job fails.
+      # !cancelled(), not always(). The point is still to save on FAILURE -- a
+      # failed publish must not discard an hour of compilation -- but saving on
+      # CANCELLATION is actively harmful here: restore-keys resolves to the most
+      # recently created matching entry, so a build cancelled two minutes in
+      # would store a near-empty ccache that then shadows the complete one from
+      # the last successful build. It also makes a cancel wait for a 2 GB upload,
+      # which GitHub warns about for always().
+      - name: Save ccache
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        uses: actions/cache/save@v6
+        with:
+          path: .ccache
+          key: ccache-${{ github.sha }}
+
+      - name: Job summary
+        if: ${{ !cancelled() }}
+        run: |
+          set -euo pipefail
+          if compgen -G 'out/*.pkg.tar.zst' > /dev/null; then
+            {
+              echo "### Packages built"
+              echo
+              echo "| package | size |"
+              echo "|---|---|"
+              for f in out/*.pkg.tar.zst; do
+                echo "| \`$(basename "$f")\` | $(du -h "$f" | cut -f1) |"
+              done
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "Nothing was built — no package directory changed." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - uses: actions/upload-artifact@v7
+        if: ${{ !cancelled() }}
+        with:
+          name: packages-${{ github.run_number }}
+          path: out/*.pkg.tar.zst
+          retention-days: 14
+          if-no-files-found: ignore
+
+      - name: Publish to R2
+        # Skipped when nothing was built, so a docs-only push does not rewrite
+        # the database for no reason.
+        if: ${{ !inputs.skip_publish }}
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          REPO_SIGNING_KEY: ${{ secrets.REPO_SIGNING_KEY }}
+          REPO_SIGNING_KEY_PASSPHRASE: ${{ secrets.REPO_SIGNING_KEY_PASSPHRASE }}
+        run: |
+          set -euo pipefail
+          if compgen -G 'out/*.pkg.tar.zst' > /dev/null; then
+            ./scripts/publish-r2.sh
+          else
+            echo "nothing built; not touching the database"
+          fi
+
+      - name: Report failure
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          RUN_NUMBER: ${{ github.run_number }}
+        run: ./scripts/report-failure.sh

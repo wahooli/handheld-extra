@@ -1,0 +1,127 @@
+Subject: [PATCH] layout: add Finnish å/ä/ö to the latin layouts
+
+wvkbd ships no Finnish layout and cannot be given one from the outside.
+`--list-layers` offers sixteen layers, and every one that names a language
+is a non-Latin script (cyrillic, arabic, persian, greek, georgian,
+hebrew). Every Latin-script language shares `full`, which is US QWERTY:
+the compiled keymap contains no adiaeresis, odiaeresis or aring at all.
+
+Hyprland's `input:kb_layout` cannot fix this either. wvkbd uploads its
+own keymap over zwp_virtual_keyboard_v1, so the compositor's layout
+setting has no bearing on what the on-screen keyboard emits.
+
+Upstream's answer today is the compose key: Cmp then `a` opens a panel
+with à á â ã ä å, and Cmp then `o` has ö. That is three interactions per
+character in a language where ä and ö are ordinary letters, not accents —
+"näytä" needs it twice. On a lockscreen, where the keyboard is the only
+input device the machine has, it is worse than tedious.
+
+So put them on dedicated keys, in the positions a physical FI board uses:
+å right of p, ö and ä right of l.
+
+── why Copy and not Code ─────────────────────────────────────────────────
+
+Copy keys carry a unicode codepoint and upload a temporary keymap on
+press (keyboard.c, `case Copy`), which is how every compose-layer key in
+this file already emits these exact characters — keys_compose_a has ä and
+å, keys_compose_o has ö, all as Copy. Reusing that costs nothing and
+leaves keymap.mobintl.h untouched. Adding real scancodes instead would
+mean hand-editing the embedded xkb keymap to claim spare keycodes, for a
+gain (autorepeat on ä) that no one holding a tablet will notice.
+
+The shift variant rides in code_mod, matching the compose-layer entries:
+0x00E4/0x00C4 for ä, 0x00F6/0x00D6 for ö, 0x00E5/0x00C5 for å.
+
+── why the 0.5 pads are dropped ──────────────────────────────────────────
+
+kbd_init_layout normalises each row independently — `k->w = (width /
+rowlength) * k->width`, with rowlength recomputed at every EndRow — so a
+row can hold any total and the keys simply divide it. Rows here already
+disagree (landscape runs 13/13/13/12).
+
+The 0.5 pads either side of the home row exist to centre nine keys under
+ten. With ö and ä the row holds eleven, is no longer narrower than the
+row above, and the centring padding is what would push it off. Dropping
+both pads is what keeps the two rows in column.
+
+Landscape keeps its trailing 0.5 pad: å goes before it, between p and
+Tab, so the row stays 14.0 against the home row's 14.5.
+
+── replacing rather than adding a layer ──────────────────────────────────
+
+A Finnish layout is US QWERTY plus three keys, so patching `full`,
+`fullwide` and `landscape` in place costs no US capability — nothing is
+removed and no extra step enters the NextLayer cycle. A separate `finnish`
+layer would mean pressing the layer key before every ä.
+
+Not upstreamable as-is for that reason: upstream would want this behind a
+new layer, not folded into the default latin layouts.
+
+--- a/layout.mobintl.h
++++ b/layout.mobintl.h
+@@ -207,9 +207,9 @@ static struct key keys_full[] = {
+   {"i", "I", 1.0, Code, KEY_I, &layouts[ComposeI]},
+   {"o", "O", 1.0, Code, KEY_O, &layouts[ComposeO]},
+   {"p", "P", 1.0, Code, KEY_P, &layouts[ComposeP]},
++  {"å", "Å", 1.0, Copy, 0x00E5, 0, 0x00C5},
+   {"", "", 0.0, EndRow},
+
+-  {"", "", 0.5, Pad},
+   {"a", "A", 1.0, Code, KEY_A, &layouts[ComposeA]},
+   {"s", "S", 1.0, Code, KEY_S, &layouts[ComposeS]},
+   {"d", "D", 1.0, Code, KEY_D, &layouts[ComposeD]},
+@@ -219,7 +219,8 @@ static struct key keys_full[] = {
+   {"j", "J", 1.0, Code, KEY_J, &layouts[ComposeJ]},
+   {"k", "K", 1.0, Code, KEY_K, &layouts[ComposeK]},
+   {"l", "L", 1.0, Code, KEY_L, &layouts[ComposeL]},
+-  {"", "", 0.5, Pad},
++  {"ö", "Ö", 1.0, Copy, 0x00F6, 0, 0x00D6},
++  {"ä", "Ä", 1.0, Copy, 0x00E4, 0, 0x00C4},
+   {"", "", 0.0, EndRow},
+
+   {"⇧", "⇫", 1.5, Mod, Shift, .scheme = 1},
+@@ -281,9 +282,9 @@ static struct key keys_full_wide[] = {
+   {"i", "I", 1.0, Code, KEY_I, &layouts[ComposeI]},
+   {"o", "O", 1.0, Code, KEY_O, &layouts[ComposeO]},
+   {"p", "P", 1.0, Code, KEY_P, &layouts[ComposeP]},
++  {"å", "Å", 1.0, Copy, 0x00E5, 0, 0x00C5},
+   {"", "", 0.0, EndRow},
+
+-  {"", "", 0.5, Pad},
+   {"a", "A", 1.0, Code, KEY_A, &layouts[ComposeA]},
+   {"s", "S", 1.0, Code, KEY_S, &layouts[ComposeS]},
+   {"d", "D", 1.0, Code, KEY_D, &layouts[ComposeD]},
+@@ -293,7 +294,8 @@ static struct key keys_full_wide[] = {
+   {"j", "J", 1.0, Code, KEY_J, &layouts[ComposeJ]},
+   {"k", "K", 1.0, Code, KEY_K, &layouts[ComposeK]},
+   {"l", "L", 1.0, Code, KEY_L, &layouts[ComposeL]},
+-  {"", "", 0.5, Pad},
++  {"ö", "Ö", 1.0, Copy, 0x00F6, 0, 0x00D6},
++  {"ä", "Ä", 1.0, Copy, 0x00E4, 0, 0x00C4},
+   {"", "", 0.0, EndRow},
+
+   {"⇧", "⇫", 1.5, Mod, Shift, .scheme = 1},
+@@ -1114,13 +1116,13 @@ static struct key keys_landscape[] = {
+   {"i", "I", 1.0, Code, KEY_I, &layouts[ComposeI]},
+   {"o", "O", 1.0, Code, KEY_O, &layouts[ComposeO]},
+   {"p", "P", 1.0, Code, KEY_P, &layouts[ComposeP]},
++  {"å", "Å", 1.0, Copy, 0x00E5, 0, 0x00C5},
+   {"", "", 0.5, Pad, .scheme = 1},
+   {"Tab", "Tab", 1.0, Code, KEY_TAB, .scheme = 1},
+   {"", "", 0.0, EndRow},
+
+   {"↑", "↑", 0.75, Code, KEY_UP, .scheme = 1},
+   {"↓", "↓", 0.75, Code, KEY_DOWN, .scheme = 1},
+-  {"", "", 0.5, Pad, .scheme = 1},
+   {"a", "A", 1.0, Code, KEY_A, &layouts[ComposeA]},
+   {"s", "S", 1.0, Code, KEY_S, &layouts[ComposeS]},
+   {"d", "D", 1.0, Code, KEY_D, &layouts[ComposeD]},
+@@ -1130,6 +1132,8 @@ static struct key keys_landscape[] = {
+   {"j", "J", 1.0, Code, KEY_J, &layouts[ComposeJ]},
+   {"k", "K", 1.0, Code, KEY_K, &layouts[ComposeK]},
+   {"l", "L", 1.0, Code, KEY_L, &layouts[ComposeL]},
++  {"ö", "Ö", 1.0, Copy, 0x00F6, 0, 0x00D6},
++  {"ä", "Ä", 1.0, Copy, 0x00E4, 0, 0x00C4},
+   {"'", "\"", 1.0, Code, KEY_APOSTROPHE, &layouts[ComposeBracket]},
+   {"/", ">", 1.0, Code, KEY_SLASH},
+   {"", "", 0.0, EndRow},

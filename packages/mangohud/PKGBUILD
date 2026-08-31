@@ -1,0 +1,113 @@
+# MangoHud, rebuilt for aarch64.
+#
+# mangoapp is the part that matters here: gamescope renders Steam's performance
+# overlay, the client does not draw it itself, and gamescope shells out to
+# mangoapp to do it. Without this package the overlay silently never appears and
+# nothing logs a complaint.
+#
+# Derived from Arch's packaging for 0.8.4-1:
+#   https://gitlab.archlinux.org/archlinux/packaging/packages/mangohud
+# Kept close to it so a version bump is a diff. Deltas, all forced by aarch64 or
+# by this being a handheld:
+#   arch=(aarch64)
+#   makedepends       libxnvctrl dropped — not in ALARM at all
+#   build()           -Dwith_xnvctrl=disabled -Dwith_nvml=disabled
+#   depends           python-matplotlib / python-numpy dropped, see below
+#
+# Maintainer: Campbell Jones <arch at serebit dot com>
+# Co-Maintainer: George Rawlinson <george@rawlinson.net.nz>
+# Contributor: Ranieri Althoff <ranisalt+aur at gmail dot com>
+# Contributor: Mark Wagie <mark dot wagie at proton dot me>
+
+# ── why not the AUR, which build-aur.sh was written for ───────────────────────
+# packages/build-aur.sh exists to build AUR PKGBUILDs that need no changes, and
+# the comment there claimed mangohud was one of them. It is not:
+#
+#   * AUR mangohud and mangohud-git both declare arch=('x86_64'), so makepkg
+#     refuses outright on aarch64 (`-A` would be needed to force it).
+#   * Both list libxnvctrl in makedepends, which does not exist for aarch64 on
+#     ALARM, so dependency resolution fails before any compiler runs.
+#   * MangoHud's meson defaults `with_xnvctrl` to enabled, so even with the
+#     makedepend waved away the build still fails on the missing library.
+#
+# So it gets a real directory instead. build-aur.sh remains useful for packages
+# that genuinely are portable; this is not one.
+
+_pkgname=MangoHud
+pkgname=mangohud
+pkgver=0.8.4
+# Bumped from Arch's -1: this is a different build of the same version (no NVIDIA
+# support, no plotting deps), and the pkgrel is the only place to say so.
+pkgrel=2
+pkgdesc='Vulkan overlay for FPS/temps/CPU-GPU load, plus mangoapp for gamescope'
+arch=('aarch64')
+url="https://github.com/flightlessmango/MangoHud"
+license=('MIT')
+makedepends=('appstream' 'cmocka' 'git' 'glslang' 'libxrandr' 'meson'
+             'python-mako' 'vulkan-headers')
+# Dropped from Arch's list: python-matplotlib (33 MB) and python-numpy (44 MB).
+# They exist for MangoHud's benchmark-plotting helper, which draws graphs from a
+# CSV after the fact — 77 MB of runtime dependency for a script this image has no
+# terminal to run and no use for. The overlay and mangoapp do not touch them.
+# Re-add both if you ever want `mangohud --benchmark` plots on the device.
+depends=('dbus' 'fmt' 'glfw' 'hicolor-icon-theme' 'libglvnd' 'libx11'
+         'libxkbcommon' 'python' 'vulkan-icd-loader' 'wayland')
+# Upstream Arch also replaces/conflicts mangohud-common* and the old split
+# x11/wayland packages. None of those have ever existed on ALARM, so only the
+# one that could plausibly collide is kept: mangoapp used to be its own package
+# and this build contains it.
+provides=('mangoapp')
+conflicts=('mangoapp')
+source=("$pkgname-$pkgver.tar.xz::https://github.com/flightlessmango/MangoHud/releases/download/v$pkgver/$_pkgname-v$pkgver-Source.tar.xz")
+# Same tarball as Arch's, so their checksum carries over verbatim — integrity for
+# free rather than a SKIP.
+b2sums=('06bdfcd26e14ff544e4dea4e39b8f7da6119d87fc7e14f381cf8c47bba69508a4768b8584600424adb8ca2a2f6f4c2d84d63683addeb83bd0dd9a1e055febdb8')
+
+prepare() {
+    cd "$_pkgname-v$pkgver"
+
+    # Use system cmocka instead of the meson subproject, which would want to
+    # download it. Straight from Arch's packaging.
+    sed --in-place "s/  cmocka = subproject('cmocka')//g" meson.build
+    sed --in-place "s/cmocka_dep = cmocka.get_variable('cmocka_dep')/cmocka_dep = dependency('cmocka')/g" meson.build
+}
+
+build() {
+    # arch-meson comes from `meson`, not devtools.
+    #
+    # The two NVIDIA options are the whole reason this cannot be the stock
+    # PKGBUILD. meson_options.txt defaults with_xnvctrl to 'enabled' and
+    # with_nvml to 'enabled', and `enabled` on a feature means required — so the
+    # build hard-fails looking for libXNVCtrl, which ALARM does not ship for
+    # aarch64 and which no Adreno handheld could use anyway.
+    arch-meson "$_pkgname-v$pkgver" build \
+        -Dmangoapp=true \
+        -Dmangohudctl=true \
+        -Dwith_xnvctrl=disabled \
+        -Dwith_nvml=disabled
+
+    meson compile -C build
+}
+
+package() {
+    meson install -C build --destdir "$pkgdir"
+
+    install -Dm 0644 "$srcdir/$_pkgname-v$pkgver/LICENSE" \
+        -t "$pkgdir/usr/share/licenses/$pkgname/"
+    rm --force "$pkgdir/usr/lib/libimgui.a"
+
+    # mangoplot is the benchmark-plotting helper, and it is the ONLY thing that
+    # wanted python-matplotlib and python-numpy — the 77 MB this package
+    # deliberately does not pull in (see depends). Keeping the script would ship
+    # a command that cannot ever run: every invocation would die on
+    # `ModuleNotFoundError: No module named 'matplotlib'`, which reads like a
+    # broken install rather than a deliberate omission.
+    #
+    # Delete this line and restore the two depends if you want plots on-device.
+    rm --force "$pkgdir/usr/bin/mangoplot"
+
+    # mangoapp is the reason this package exists — fail here rather than ship a
+    # package that installs cleanly and leaves the overlay dead.
+    [ -x "$pkgdir/usr/bin/mangoapp" ] \
+        || { echo "PKGBUILD: mangoapp missing — was -Dmangoapp=true honoured?" >&2; return 1; }
+}

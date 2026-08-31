@@ -1,0 +1,76 @@
+# ─── secrets ────────────────────────────────────────────────────────────────
+# This repository is public and publishes signed packages. Same list as the
+# kernel repo, for the same reason: a .gitignore is only useful for the mistake
+# you have not made yet.
+*.asc
+*.gpg
+*.pem
+*.p12
+*.pfx
+*.jks
+*.key
+id_rsa*
+id_ed25519*
+handheld-repo-*
+*passphrase*
+*secret*
+*credentials*
+rclone.conf
+.rclone.conf
+.aws/
+
+# The blanket *.env is for stray credential dumps, so the two kinds of .env this
+# project actually uses have to be named back in. Copied from the kernel repo,
+# where the only exception was sources.env; here it silently swallowed repo.env
+# and every packages/*/upstream.env -- i.e. the entire upstream-tracking
+# configuration -- and the loss is invisible until something reads a default.
+.env
+.env.*
+*.env
+!repo.env
+!packages/*/upstream.env
+*.local.*
+
+# ─── build output ───────────────────────────────────────────────────────────
+# scripts/build-in-container.sh sets BUILDDIR and SRCDEST so makepkg never writes
+# inside packages/, which is why there are no packages/*/src/ or packages/*/pkg/
+# rules here. Those rules would also be actively wrong: decky-plugin-handheld-
+# control is first-party and its src/ is TypeScript that has to be committed.
+out/
+.build/
+.cache/
+.ccache/
+*.pkg.tar.zst
+*.pkg.tar.zst.sig
+*.pkg.tar.xz
+*.pkg.tar.xz.sig
+
+# ─── in-place JS build output ───────────────────────────────────────────────
+# decky-plugin-handheld-control is first-party, so its PKGBUILD has an empty
+# source=() and builds from $startdir directly -- BUILDDIR and SRCDEST cannot
+# keep pnpm out of the package directory the way they do for downloaded sources.
+#
+# pnpm-lock.yaml is ignored rather than committed, which is a decision worth
+# knowing about: see the note in that package's directory.
+packages/*/node_modules/
+packages/*/dist/
+packages/*/pnpm-lock.yaml
+packages/*/package-lock.json
+packages/*/.pnpm/
+
+# ─── fetched, not vendored ──────────────────────────────────────────────────
+# External patch sets, pulled by scripts/fetch-patch-set.sh at the ref
+# pinned in each package's upstream.env. Committing them would make this a quiet
+# fork of armada's work; the pinned commit is the reviewable part.
+packages/*/patch-set/
+
+# ─── generated ──────────────────────────────────────────────────────────────
+.build-report.md
+.upstream-report.md
+
+# ─── editor / OS ────────────────────────────────────────────────────────────
+.DS_Store
+*.swp
+*~
+.idea/
+.vscode/

@@ -1,0 +1,116 @@
+name: check
+
+# Fast validation on every push, in about a minute.
+#
+# Same rationale as the kernel repo's: build.yml deliberately does not rebuild
+# for script or workflow edits, so those changes still need somewhere to be
+# checked. Here it also guards the per-package manifests, which is where this
+# repo's equivalent mistakes live -- a package the poller silently ignores is
+# worse than one that fails loudly.
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Shell syntax
+        run: |
+          set -euo pipefail
+          for f in scripts/*.sh; do
+            bash -n "$f" || { echo "::error file=$f::bash syntax error"; exit 1; }
+          done
+          echo "$(ls scripts/*.sh | wc -l) scripts parse"
+
+      # PINNED, and run through the same container used locally. Ubuntu's apt
+      # shellcheck is a different version and disagrees -- that cost the kernel
+      # repo a red build for five SC2015 findings that were clean on a laptop.
+      #
+      # Run exactly this before pushing:
+      #   docker run --rm -v "$PWD:/mnt" -w /mnt koalaman/shellcheck:v0.11.0 \
+      #     -e SC1090,SC1091,SC2086,SC2016,SC2181,SC2012,SC2154 scripts/*.sh
+      - name: Shellcheck
+        run: |
+          set -euo pipefail
+          docker run --rm -v "$PWD:/mnt" -w /mnt koalaman/shellcheck:v0.11.0 \
+            -e SC1090,SC1091,SC2086,SC2016,SC2181,SC2012,SC2154 scripts/*.sh
+          echo "shellcheck v0.11.0: clean"
+
+      # Both the YAML validity check and the mixed-conditional check live in
+      # scripts/lint-workflows.py. They cannot be inline: GitHub scans the whole
+      # workflow file for expression sequences, including inside run: blocks, so
+      # a linter that searches for those sequences makes the workflow invalid
+      # just by containing them.
+      - name: Workflows
+        run: |
+          set -euo pipefail
+          python3 -m pip install --quiet pyyaml 2>/dev/null || true
+          python3 scripts/lint-workflows.py
+
+      - name: PKGBUILDs parse
+        run: |
+          set -euo pipefail
+          n=0
+          for p in packages/*/PKGBUILD; do
+            bash -n "$p" || { echo "::error file=$p::bash syntax error"; exit 1; }
+            n=$((n + 1))
+          done
+          for i in packages/*/*.install; do
+            [ -e "$i" ] || continue
+            bash -n "$i" || { echo "::error file=$i::bash syntax error"; exit 1; }
+          done
+          echo "$n PKGBUILDs parse"
+
+      - name: Package manifests
+        run: |
+          set -euo pipefail
+          rc=0
+
+          grep -qE '^REPO_NAME=[a-z0-9-]+$' repo.env \
+            || { echo "::error file=repo.env::REPO_NAME missing or not a plain repo name"; rc=1; }
+          grep -qE '^ARCH_DIR=[a-z0-9/-]+$' repo.env \
+            || { echo "::error file=repo.env::ARCH_DIR missing or malformed"; rc=1; }
+
+          for d in packages/*/; do
+            p="$(basename "$d")"
+
+            # Every package needs a PKGBUILD and an upstream.env. The second is
+            # the one that goes missing: a package without it is skipped by the
+            # poller in silence, so it quietly stops being tracked and nobody
+            # notices until it is a year behind.
+            [ -f "${d}PKGBUILD" ] \
+              || { echo "::error::packages/${p} has no PKGBUILD"; rc=1; continue; }
+            [ -f "${d}upstream.env" ] \
+              || { echo "::error::packages/${p} has no upstream.env -- the poller would ignore it"; rc=1; continue; }
+
+            # shellcheck disable=SC1090
+            ( TRACK=; GITHUB_REPO=; GIT_URL=; OCI_IMAGE=; OCI_TAG_RE=; CURRENT=
+              . "${d}upstream.env"
+              case "${TRACK}" in
+                none) ;;
+                oci)
+                  [ -n "${OCI_IMAGE}" ] && [ -n "${CURRENT}" ] \
+                    || { echo "::error::packages/${p}: TRACK=oci needs OCI_IMAGE and CURRENT"; exit 1; }
+                  [ -n "${OCI_TAG_RE}" ] && [[ "${CURRENT}" =~ ${OCI_TAG_RE} ]] \
+                    || { echo "::error::packages/${p}: CURRENT does not match its own OCI_TAG_RE"; exit 1; } ;;
+                github-release)
+                  [ -n "${GITHUB_REPO}" ] && [ -n "${CURRENT}" ] \
+                    || { echo "::error::packages/${p}: TRACK=github-release needs GITHUB_REPO and CURRENT"; exit 1; } ;;
+                git-tag)
+                  [ -n "${GIT_URL}" ] && [ -n "${CURRENT}" ] \
+                    || { echo "::error::packages/${p}: TRACK=git-tag needs GIT_URL and CURRENT"; exit 1; } ;;
+                *)
+                  echo "::error::packages/${p}: unknown TRACK='${TRACK}'"; exit 1 ;;
+              esac ) || rc=1
+          done
+
+          [ "$rc" = 0 ] && echo "repo.env and all $(ls -d packages/*/ | wc -l) package manifests look sane"
+          exit "$rc"

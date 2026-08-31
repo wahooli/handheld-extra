@@ -1,0 +1,93 @@
+# wvkbd, the on-screen keyboard, with one patch adding Finnish å/ä/ö to the
+# latin layouts. See patches/ for why that cannot be done from configuration.
+#
+# Derived from the AUR packaging for 0.20-1:
+#   https://aur.archlinux.org/packages/wvkbd
+# Kept deliberately close to it so a version bump is a diff, not a rewrite.
+# Deltas: arch=(aarch64), pkgrel bumped, prepare() applies patches/.
+#
+# Maintainer: Ash <xash at riseup d0t net>
+# Contributor: Aren <rn+aur@peacevolution.org>
+
+# NOTE: pkgname is deliberately still `wvkbd`, not `wvkbd-fi`. Installing this
+# is a plain `pacman -U` upgrade over the AUR build rather than a
+# provides/conflicts replacement, and the directory name is what marks it as
+# the patched one.
+pkgname=wvkbd
+pkgver=0.20
+# Bumped so this outranks the stock 0.20-1 and `pacman -U` reads as an upgrade.
+pkgrel=2
+pkgdesc='On-screen keyboard for wlroots (Finnish å/ä/ö in the latin layouts)'
+url='https://git.sr.ht/~proycon/wvkbd'
+arch=('aarch64')
+license=('GPL3')
+depends=('wayland' 'pango' 'cairo' 'glibc')
+makedepends=('fontconfig' 'libxkbcommon' 'scdoc')
+source=("$pkgname-$pkgver.tar.gz::https://git.sr.ht/~proycon/wvkbd/archive/v$pkgver.tar.gz")
+sha512sums=('1c5204dc00f7a3bdfd199dfa88b513c46249b7832ba546c0554940539fcc4e0d55303a9f6edd17dd82fd2893b602b86395202311b3ec851f5e8f41895f682371')
+
+# Patches live in patches/ and are read via ${startdir} rather than listed in
+# source=(), matching how the other patched packages here work.
+# Keeps them editable without a checksum dance, since they are ours and
+# versioned alongside the PKGBUILD.
+_patches=(
+  0001-layout-add-Finnish-a-o-a-to-the-latin-layouts.patch
+)
+
+prepare() {
+  cd "$pkgname-v$pkgver"
+
+  # ---- patch stack ---------------------------------------------------------
+  # Dry-run first, same reasoning as the other patched packages: GNU patch can
+  # exit 0 after consuming only the first hunk and dismissing the rest as
+  # trailing garbage, so a half-applied patch would otherwise sail through and
+  # produce a keyboard that looks built and is missing half its Finnish keys.
+  local p f
+  for p in "${_patches[@]}"; do
+    f="${startdir}/patches/${p}"
+    [ -f "${f}" ] || { echo "::  missing patch: ${p}"; return 1; }
+
+    if ! patch -p1 --batch --forward -F0 --dry-run --quiet < "${f}"; then
+      echo "::  FAILED: ${p}"
+      echo "::  wvkbd moved under the patch — rebase it against ${pkgver}."
+      return 1
+    fi
+    patch -p1 --batch --forward -F0 --quiet < "${f}"
+    echo "::  applied: ${p}"
+  done
+}
+
+build() {
+  make -C "$pkgname-v$pkgver"
+}
+
+check() {
+  # Assert on the patched SOURCE, not the binary. Grepping the binary for "ä"
+  # looks like the obvious check and is worthless: upstream already emits ä, ö
+  # and å from the compose layers (keys_compose_a, keys_compose_o), so those
+  # bytes are in an unpatched build too and the check passes either way.
+  #
+  # Counting the codepoint pairs does discriminate. Each appears exactly once
+  # upstream, in its compose layer, and this patch adds one more to each of
+  # keys_full, keys_full_wide and keys_landscape:
+  #
+  #     1 pre-existing + 3 added = 4
+  #
+  # A rebase that drops a hunk lands on 3, which is the failure worth catching.
+  local f="$pkgname-v$pkgver/layout.mobintl.h"
+  local spec n
+  for spec in 'å:0x00E5, 0, 0x00C5' 'ä:0x00E4, 0, 0x00C4' 'ö:0x00F6, 0, 0x00D6'; do
+    n=$(grep -c -- "${spec#*:}" "$f")
+    [ "$n" -eq 4 ] || {
+      echo "::  ${spec%%:*}: expected 4 occurrences of '${spec#*:}', found ${n}"
+      echo "::  a patch hunk did not land — rebase patches/ against ${pkgver}."
+      return 1
+    }
+  done
+}
+
+package() {
+  make -C "$pkgname-v$pkgver" PREFIX=/usr DESTDIR="$pkgdir" install
+}
+
+# vim: ts=2 sw=2 et:

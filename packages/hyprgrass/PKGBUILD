@@ -1,0 +1,155 @@
+# hyprgrass — touchscreen gestures for Hyprland.
+#
+# The Odin 3 has a touchscreen and the desktop half of this image is meant to be
+# driven by it, so gestures (swipe to switch workspace, edge swipes, long-press)
+# are the difference between a usable desktop and a mouse-shaped one.
+#
+# ── why a PKGBUILD and not hyprpm ─────────────────────────────────────────────
+# hyprpm is Hyprland's own plugin manager and is the supported path: it builds a
+# plugin against the installed headers and `hyprpm update` rebuilds after a
+# Hyprland bump. What it needs is base-devel, meson/cmake and a C++23 compiler ON
+# THE DEVICE, plus network, plus compiling C++ on a handheld at update time.
+#
+# This image is built from a container that already has all of that, and ships a
+# device with no toolchain. So the plugin is built here and the ABI coupling is
+# enforced by pacman instead of re-derived on the device:
+#
+#   depends=("hyprland=${_hyprver}")   pacman refuses to upgrade hyprland while
+#                                      this is installed — the mismatch surfaces
+#                                      loudly rather than as a plugin that
+#                                      silently stops loading
+#   IgnorePkg = hyprland               10-base-packages.sh, so -Syu does not try
+#   60-hyprgrass-abi.hook              says what to do if it happens anyway
+#
+# The two only ever move together, and they move at image-build time. If you would
+# rather have hyprpm's on-device rebuild, the cost is base-devel in the image.
+#
+# ── why `main` and not a release tag ──────────────────────────────────────────
+# The newest RELEASE is v0.8.2, from 2024-10-09. Hyprland is at 0.56.1. A plugin
+# is ABI-locked to the compositor it was compiled against, so a 2024 tag has no
+# chance of loading — the AUR package tracks `main` for exactly this reason, and
+# so does this. main was last touched 2026-08-13, so it does track current
+# Hyprland.
+#
+# ── what this does NOT copy from the AUR package ──────────────────────────────
+# aur/hyprgrass-git is unusable here twice over:
+#   depends=('hyprland-git')  we install hyprland from extra, not the git package
+#   arch=('x86_64')           needs an override
+# and its package() deliberately swallows a failed build:
+#     echo "Warning: ... non-fatal"; return 0  # Don't fail the entire update
+# shipping an empty package that installs cleanly and does nothing. That is the
+# single worst outcome for us, so this one fails hard instead.
+
+pkgname=hyprgrass
+# The hyprland version is IN the package version on purpose: `pacman -Q hyprgrass`
+# then tells you what it was compiled against, which is the only thing that
+# determines whether it can load.
+_srcver=0.8.2
+_hyprver=0.56.1
+pkgver="${_srcver}+hypr${_hyprver}"
+pkgrel=1
+# 2026-08-13. Bump together with _hyprver whenever hyprland moves.
+#
+# If a bump does not build, upstream keeps its own compatibility matrix in
+# hyprpm.toml at the repo root: a `commit_pins` table mapping Hyprland commit ->
+# hyprgrass commit. That is the authoritative source for "which hyprgrass goes
+# with which Hyprland", and is what the AUR package parses at build time. Look up
+# the commit Arch built hyprland ${_hyprver} from and take the paired entry.
+_commit=56473e9e0b2da34bb3b871e90f40b3fc3d41ba9b
+pkgdesc="Touchscreen gesture plugin for Hyprland (built against ${_hyprver})"
+arch=('aarch64')
+url='https://github.com/horriblename/hyprgrass'
+license=('BSD-3-Clause')
+# Exact upstream version. pacman ignores pkgrel when the dependency does not
+# specify one, so this tracks Hyprland's own version rather than Arch's rebuilds —
+# which is right, because the ABI is upstream's, not Arch's.
+depends=("hyprland=${_hyprver}")
+# hyprland is a makedepend too: it ships the 596 plugin headers and hyprland.pc
+# that meson's dependency('hyprland') resolves. Its own dependencies bring the
+# .pc files that hyprland.pc lists under Requires: (aquamarine, hyprutils,
+# hyprlang, hyprgraphics, libinput, wayland-server, the xcb-* set).
+#
+# glm + cmake are BOTH needed for the bundled wf-touch subproject (the gesture
+# recogniser hyprgrass is built on), and cmake is the non-obvious half:
+#
+#   Arch's glm 1.0.3 ships ONLY /usr/lib/cmake/glm/glmConfig.cmake — no
+#   pkg-config file at all, so `pkg-config --exists glm` is false.
+#
+# meson's dependency() tries pkg-config first and CMake second, but the CMake
+# path needs cmake installed. Without it the failure names only the method that
+# was tried, which reads as a missing library rather than a missing lookup tool:
+#   subprojects/wf-touch/meson.build:6:6: ERROR: Dependency "glm" not found
+#                                               (tried pkg-config)
+makedepends=('git' 'meson' 'ninja' 'cmake' 'pkgconf' 'hyprland' 'glm')
+source=("${pkgname}::git+${url}.git#commit=${_commit}")
+sha256sums=('SKIP')
+
+prepare() {
+    cd "${srcdir}/${pkgname}"
+
+    # Fail before compiling if the headers on hand are not the version this
+    # package claims to target. Otherwise the build succeeds, the plugin installs,
+    # and Hyprland silently refuses to load it at runtime — the failure would show
+    # up as "gestures do not work" with nothing in any build log.
+    local have
+    have="$(pkg-config --modversion hyprland)"
+    if [ "${have}" != "${_hyprver}" ]; then
+        echo "::  hyprland headers are ${have}, this package targets ${_hyprver}" >&2
+        echo "::  bump _hyprver (and probably _commit) in this PKGBUILD" >&2
+        return 1
+    fi
+    echo "::  building against hyprland ${have}"
+}
+
+build() {
+    cd "${srcdir}/${pkgname}"
+
+    # -Dtests=disabled matters: `tests` is a meson FEATURE with value 'auto', and
+    # arch-meson passes --auto-features=enabled, which would flip it on and pull a
+    # test framework we have no use for in a packaged build.
+    #
+    # The pulse/backlight extensions default to false upstream and are named here
+    # only so a future default change cannot quietly add PulseAudio to the closure.
+    #
+    # (There is no -Dhyprpm option; meson_options.txt has exactly tests,
+    # hyprgrass, hyprgrass-pulse and hyprgrass-backlight.)
+    # -Dwf-touch:tests=disabled is the subproject-scoped one and is REQUIRED, not
+    # tidiness. wf-touch has its own `option('tests', type: 'feature', value:
+    # 'auto')` and does:
+    #     doctest = dependency('doctest', required: get_option('tests'))
+    # arch-meson passes --auto-features=enabled, and that propagates INTO
+    # subprojects, so wf-touch's auto tests flip to enabled and doctest becomes a
+    # hard requirement. Our own -Dtests=disabled does not reach it — that sets
+    # hyprgrass's option, not wf-touch's. The failure reads as a missing library:
+    #     subprojects/wf-touch/meson.build:19:10: ERROR: Dependency "doctest"
+    #                                             not found
+    # Disabling it is right rather than installing doctest: a release build has no
+    # business pulling in a unit-test framework.
+    arch-meson . build \
+        -Dtests=disabled \
+        -Dwf-touch:tests=disabled \
+        -Dhyprgrass=true \
+        -Dhyprgrass-pulse=false \
+        -Dhyprgrass-backlight=false
+    meson compile -C build
+}
+
+package() {
+    cd "${srcdir}/${pkgname}"
+
+    # Upstream has moved this between build/src/ and build/ over time, so look in
+    # both — but FAIL if neither has it. See the note above about the AUR package
+    # shipping an empty package in this situation.
+    local so=""
+    for candidate in build/src/libhyprgrass.so build/libhyprgrass.so; do
+        [ -f "${candidate}" ] && { so="${candidate}"; break; }
+    done
+    [ -n "${so}" ] || {
+        echo "::  no libhyprgrass.so was produced — refusing to ship an empty package" >&2
+        find build -name '*.so' -printf '::  found instead: %p\n' >&2
+        return 1
+    }
+
+    install -Dm0755 "${so}" "${pkgdir}/usr/lib/libhyprgrass.so"
+    install -Dm0644 LICENSE "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
+}

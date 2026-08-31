@@ -1,0 +1,69 @@
+# uMTP-Responder — lets the device appear as MTP storage over USB, so a phone or
+# a PC can browse it without a network share.
+#
+# Ported from armada's umtp-responder.spec. The upstream commit and version come
+# from their BASE.env, and the five patches are fetched at the armada commit
+# pinned in upstream.env (scripts/fetch-patch-set.sh), not vendored here.
+#
+# Maintainer: Waltteri Hooli <1420194+wahooli@users.noreply.github.com>
+
+pkgname=umtp-responder
+pkgver=1.9.1
+pkgrel=1
+# armada's BASE.env COMMIT. Upstream tags exist but armada builds a specific
+# commit, and their patches are written against it -- following the tag instead
+# would be quietly building something they have not tested.
+_commit=153f76d65608c184a972ad7d0b4ae605e56c0972
+_upstream=uMTP-Responder
+pkgdesc='Lightweight Media Transfer Protocol (MTP) responder daemon'
+arch=(aarch64)
+url='https://github.com/viveris/uMTP-Responder'
+license=(GPL-3.0-or-later)
+depends=(glibc systemd-libs)
+makedepends=(gcc make systemd)
+backup=(etc/umtprd/umtprd.conf)
+source=("${pkgname}-${_commit}.tar.gz::${url}/archive/${_commit}.tar.gz")
+sha256sums=(SKIP)
+
+_patches=()
+for _p in "${startdir}"/patch-set/*.patch; do
+  [ -e "${_p}" ] && _patches+=("$(basename "${_p}")")
+done
+unset _p
+
+prepare() {
+  cd "${_upstream}-${_commit}"
+  local p f
+  for p in "${_patches[@]}"; do
+    f="${startdir}/patch-set/${p}"
+    [ -f "${f}" ] || { echo "::  missing patch: ${p} (run scripts/fetch-patch-set.sh ${pkgname})"; return 1; }
+    # Dry-run first: GNU patch can exit 0 having consumed only the first hunk and
+    # dismissed the rest as trailing garbage, which would ship a half-patched
+    # daemon that looks fine until it misbehaves on the device.
+    if ! patch -p1 --batch --forward -F0 --dry-run --quiet < "${f}"; then
+      echo "::  FAILED: ${p}"
+      echo "::  armada rebased onto a different upstream commit, or _commit moved."
+      return 1
+    fi
+    patch -p1 --batch --forward -F0 --quiet < "${f}"
+    echo "::  applied: ${p}"
+  done
+}
+
+build() {
+  cd "${_upstream}-${_commit}"
+  # CFLAGS/LDFLAGS mirror armada's spec. -DSYSTEMD_NOTIFY is load-bearing: the
+  # shipped unit is Type=notify, so without it systemd waits for a readiness
+  # notification that never arrives and the service times out.
+  make \
+    CFLAGS="${CFLAGS} -I./inc -Wall -DSYSTEMD_NOTIFY" \
+    LDFLAGS="${LDFLAGS} -lpthread -lrt -lsystemd"
+}
+
+package() {
+  cd "${_upstream}-${_commit}"
+  install -Dm755 umtprd "${pkgdir}/usr/bin/umtprd"
+  install -Dm644 conf/umtprd.conf "${pkgdir}/etc/umtprd/umtprd.conf"
+  install -Dm644 LICENSE "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
+  install -Dm644 README.md "${pkgdir}/usr/share/doc/${pkgname}/README.md"
+}

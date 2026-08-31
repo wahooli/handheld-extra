@@ -1,0 +1,74 @@
+# InputPlumber — the input router that makes handheld controllers, gyros and
+# back-buttons present themselves as something Steam understands.
+#
+# Ported from armada's inputplumber.spec. The upstream commit and version come
+# from their BASE.env; the three patches are fetched at the armada commit pinned
+# in upstream.env (scripts/fetch-patch-set.sh) rather than vendored here.
+#
+# Maintainer: Waltteri Hooli <1420194+wahooli@users.noreply.github.com>
+
+pkgname=inputplumber
+pkgver=0.77.2
+pkgrel=1
+# armada's BASE.env COMMIT. Their patches are written against this exact commit,
+# so following the upstream tag instead would build something they have not
+# tested the fixes on.
+_commit=85f5fd5c52e414cc01f59f9754c0eb71a5a91b7e
+_appname=InputPlumber
+pkgdesc='Input router and remapper daemon for handheld gaming devices'
+arch=(aarch64)
+url='https://github.com/ShadowBlip/InputPlumber'
+license=(GPL-3.0-or-later)
+depends=(glibc systemd-libs dbus libevdev libiio)
+# clang and lld are not padding: the crate graph builds C shims through bindgen,
+# which needs libclang at build time.
+makedepends=(cargo rust clang lld make git)
+install=inputplumber.install
+source=("${pkgname}-${_commit}.tar.gz::${url}/archive/${_commit}.tar.gz")
+sha256sums=(SKIP)
+
+_patches=()
+for _p in "${startdir}"/patch-set/*.patch; do
+  [ -e "${_p}" ] && _patches+=("$(basename "${_p}")")
+done
+unset _p
+
+prepare() {
+  cd "${_appname}-${_commit}"
+  local p f
+  for p in "${_patches[@]}"; do
+    f="${startdir}/patch-set/${p}"
+    [ -f "${f}" ] || { echo "::  missing patch: ${p} (run scripts/fetch-patch-set.sh ${pkgname})"; return 1; }
+    if ! patch -p1 --batch --forward -F0 --dry-run --quiet < "${f}"; then
+      echo "::  FAILED: ${p}"
+      echo "::  armada rebased onto a different upstream commit, or _commit moved."
+      return 1
+    fi
+    patch -p1 --batch --forward -F0 --quiet < "${f}"
+    echo "::  applied: ${p}"
+  done
+
+  # Vendor the crate graph now, so build() needs no network. makepkg builds with
+  # networking available, but a build that silently depends on crates.io being
+  # reachable fails in CI at the least convenient time.
+  export RUSTUP_TOOLCHAIN=stable
+  cargo fetch --locked --target aarch64-unknown-linux-gnu
+}
+
+build() {
+  cd "${_appname}-${_commit}"
+  export RUSTUP_TOOLCHAIN=stable
+  export CARGO_TARGET_DIR=target
+  # Upstream's Makefile, not a bare `cargo build`: it is what selects the target
+  # triple and the release profile the install target then looks for.
+  make build BUILD_TYPE=release
+}
+
+package() {
+  cd "${_appname}-${_commit}"
+  # PREFIX is prefixed with $pkgdir rather than set to it: the Makefile appends
+  # /bin, /share and /lib itself.
+  make install PREFIX="${pkgdir}/usr"
+  install -Dm644 LICENSE "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
+  install -Dm644 README.md "${pkgdir}/usr/share/doc/${pkgname}/README.md"
+}

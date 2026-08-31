@@ -1,0 +1,102 @@
+# EmuDecky — EmuDeck's official Decky plugin.
+#
+# This is the reason the loader was worth building. Unlike the power plugins
+# (PowerTools and friends drive amdgpu/RyzenAdj sysfs and will never do anything
+# on an Adreno), EmuDeck's plugin family is pure TypeScript against the Steam
+# client, so it is architecture-independent — nothing here is patched for arm64,
+# it is simply built for it.
+#
+# What it does NOT do: install emulators. That is the EmuDeck AppImage's job
+# (see build_files/47-emulation.sh). This is the in-session UI on top.
+#
+# ── how a Decky plugin gets installed ─────────────────────────────────────────
+# Plugins live in ~/homebrew/plugins/<Name>/, which must be writable because
+# Decky installs and updates them at runtime. So this package stages a read-only
+# copy under /usr/share/decky-plugins/ and /usr/lib/handheld/decky-sync copies it
+# into $HOME at boot — the same split as the loader itself, and the same pattern
+# Armada uses for armada-control.
+#
+# The directory name matters: it must match `name` in plugin.json ("EmuDecky"),
+# because that is the key Decky uses to match a frontend bundle to its backend.
+
+pkgname=decky-plugin-emudecky
+pkgver=1.0.10
+pkgrel=1
+# Pinned. There are no releases or tags to track, so the ref IS the version — and
+# see the lockfile note in build() for why pinning the source matters more here
+# than usual.
+_commit=84af595
+pkgdesc="EmuDeck's official Decky plugin (EmuDecky), built for aarch64"
+arch=('aarch64')
+url='https://github.com/EmuDeck/EmuDecky'
+license=('GPL-2.0-or-later')
+# Nothing at runtime: the frontend is JS served by the loader, and main.py runs
+# under PluginLoader's own frozen interpreter, not the system python.
+depends=()
+makedepends=('git' 'nodejs' 'npm' 'pnpm')
+source=("git+${url}.git#commit=${_commit}")
+sha256sums=('SKIP')
+
+_srcdir="EmuDecky"
+
+build() {
+    cd "${srcdir}/${_srcdir}"
+
+    # Keep every cache inside $srcdir — makepkg runs this as the unprivileged
+    # `build` user and pnpm should not be writing to its home.
+    export HOME="${srcdir}/.home"
+    export XDG_CACHE_HOME="${srcdir}/.cache"
+    export npm_config_cache="${srcdir}/.npm"
+    export PNPM_HOME="${srcdir}/.pnpm"
+    mkdir -p "${HOME}" "${XDG_CACHE_HOME}" "${PNPM_HOME}"
+
+    # NOT --frozen-lockfile, which is what upstream CI would use.
+    #
+    # EmuDecky's pnpm-lock.yaml predates a pnpm lockfile format break and current
+    # pnpm refuses it outright:
+    #     ERR_PNPM_LOCKFILE_BREAKING_CHANGE  Lockfile not compatible with
+    #     current pnpm. Run with the --force parameter to recreate the lockfile.
+    # So the JS dependency tree is resolved fresh at build time rather than
+    # pinned. That is a real reproducibility gap and worth stating plainly: a
+    # breaking release in decky-frontend-lib or rollup would surface as a build
+    # failure here. Pinning _commit at least fixes OUR source; the dep tree is
+    # upstream's problem to re-lock.
+    #
+    # --dangerously-allow-all-builds because several transitive packages have
+    # install scripts, and pnpm 11 blocks them by default.
+    pnpm i --dangerously-allow-all-builds
+    pnpm run build
+
+    [ -f dist/index.js ] \
+        || { echo "PKGBUILD: rollup produced no dist/index.js" >&2; return 1; }
+}
+
+package() {
+    cd "${srcdir}/${_srcdir}"
+
+    # "EmuDecky" — matches plugin.json's `name`, not $pkgname. Decky keys the
+    # backend to the frontend bundle by this directory name, so a tidier
+    # lowercase name here would give a plugin that loads and then does nothing.
+    local dest="${pkgdir}/usr/share/decky-plugins/EmuDecky"
+    install -d "${dest}"
+
+    install -Dm0644 plugin.json package.json -t "${dest}/"
+    install -Dm0644 main.py -t "${dest}/"
+
+    cp -a dist "${dest}/dist"
+    # Source maps are a third of the payload and useless on a device.
+    rm -f "${dest}/dist/"*.map
+
+    # py_modules is empty upstream today, but the loader expects the directory to
+    # exist for plugins that declare a backend, and EmuDecky's plugin.json does.
+    if [ -d py_modules ]; then
+        cp -a py_modules "${dest}/py_modules"
+    else
+        install -d "${dest}/py_modules"
+    fi
+    [ -d assets ] && cp -a assets "${dest}/assets"
+
+    find "${dest}" -name __pycache__ -type d -prune -exec rm -rf {} +
+
+    install -Dm0644 LICENSE "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
+}

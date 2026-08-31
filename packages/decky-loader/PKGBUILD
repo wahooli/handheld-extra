@@ -1,0 +1,127 @@
+# Decky Loader, built natively for aarch64.
+#
+# Upstream publishes exactly one Linux asset per release and it is x86-64
+# (`e_machine 0x3e`). Armada works around that by running it under host FEX with
+# its own guest rootfs; this repo has no host FEX, so it builds the thing
+# instead. Nothing in decky-loader is architecture-specific — the frontend is
+# TypeScript, the backend is Python, and PyInstaller freezes whatever
+# interpreter it is pointed at. The only reason no arm64 asset exists is that
+# upstream's workflow had no arm64 runner until
+# https://github.com/SteamDeckHomebrew/decky-loader/pull/914 (open, approved).
+#
+# When that PR merges, DELETE THIS PACKAGE and download the official
+# `PluginLoader-arm64` release asset instead. Everything below exists only to
+# stand in for a CI job upstream is about to run itself.
+#
+# Verified: produces an 18 MB aarch64 ELF reporting version v3.2.8-pre1.
+
+pkgname=decky-loader
+# `pip show` normalises the tag to this; decky's own get_loader_version()
+# reports it back as v3.2.8-pre1. Keep _tag and pkgver in step.
+pkgver=3.2.8rc1
+_tag=v3.2.8-pre1
+pkgrel=1
+pkgdesc='Plugin loader for the Steam Deck UI (native aarch64 build)'
+arch=(aarch64)
+url=https://github.com/SteamDeckHomebrew/decky-loader
+license=(GPL-2.0-only)
+depends=(glibc)
+# pnpm rather than npm: the repo ships a pnpm-lock.yaml and the upstream
+# workflow uses --frozen-lockfile, which only pnpm can honour.
+makedepends=(git nodejs npm pnpm python python-pip)
+source=("git+${url}.git#tag=${_tag}")
+sha256sums=('SKIP')
+
+_srcdir="${pkgname}"
+
+prepare() {
+  cd "${srcdir}/${_srcdir}"
+
+  # backend/pyproject.toml declares python = ">=3.10,<3.14", which is why the
+  # upstream workflow pins 3.11.7. ALARM ships 3.14, and the cap is metadata
+  # rather than a real incompatibility: aiohttp 3.14.3, multidict 6.7.1,
+  # setproctitle 1.3.7 and watchdog 6.0.0 all resolve on aarch64 + cp314, and
+  # PyInstaller 6.22.2 claims support through 3.15.
+  #
+  # Carrying a second interpreter (AUR python311, or a standalone CPython) just
+  # to satisfy a version bound nothing enforces at runtime is the worse trade.
+  # If a future decky release genuinely breaks on 3.14, this is the line that
+  # should start failing loudly rather than being widened further.
+  sed -i 's/^python = ">=3.10,<3.14"/python = ">=3.10,<3.16"/' backend/pyproject.toml
+  grep -q '^python = ">=3.10,<3.16"' backend/pyproject.toml \
+    || { echo "PKGBUILD: python constraint not patched — upstream changed it" >&2; return 1; }
+}
+
+build() {
+  cd "${srcdir}/${_srcdir}"
+
+  # makepkg runs this as the unprivileged `build` user, whose home is not
+  # somewhere pnpm and pip should be writing. Keep every cache inside $srcdir so
+  # a rebuild is reproducible and nothing leaks into the container's state.
+  export HOME="${srcdir}/.home"
+  export XDG_CACHE_HOME="${srcdir}/.cache"
+  export npm_config_cache="${srcdir}/.npm"
+  export PNPM_HOME="${srcdir}/.pnpm"
+  export PIP_CACHE_DIR="${srcdir}/.pip"
+  mkdir -p "${HOME}" "${XDG_CACHE_HOME}" "${PNPM_HOME}"
+
+  # NOTE: this build() reaches the network, which makepkg would rather it did
+  # not. pnpm and pip resolve dependency trees that cannot be expressed as
+  # source=() entries without vendoring both lockfiles by hand. The same
+  # compromise every Electron and Python-app PKGBUILD in the AUR makes; the
+  # lockfiles are what keep it deterministic.
+  msg2 "frontend (pnpm)"
+  pushd frontend > /dev/null
+  pnpm i --frozen-lockfile --dangerously-allow-all-builds
+  pnpm run build
+  popd > /dev/null
+
+  msg2 "backend (pyinstaller)"
+  pushd backend > /dev/null
+  python3 -m venv "${srcdir}/venv"
+  # shellcheck source=/dev/null
+  source "${srcdir}/venv/bin/activate"
+  python3 -m pip install --upgrade pip
+
+  # Install the project ITSELF, not just its dependencies. pyinstaller.spec
+  # calls copy_metadata('decky_loader'), which reads installed distribution
+  # metadata — deps on sys.path are not enough, and the failure is an opaque
+  # `PackageNotFoundError: No package metadata was found for decky_loader`
+  # thrown from inside the spec file. Upstream gets this from `poetry install`.
+  #
+  # This also resolves the poetry-dynamic-versioning build backend, which reads
+  # the git tag for the version — hence the tag-pinned source= above rather than
+  # a bare commit.
+  python3 -m pip install .
+  python3 -m pip install pyinstaller
+
+  pyinstaller pyinstaller.spec
+  popd > /dev/null
+
+  # Fail here rather than shipping something unrunnable: a PluginLoader for the
+  # wrong architecture is the exact bug this package exists to avoid, and it is
+  # invisible until the service fails to start on the device.
+  local _machine
+  _machine="$(python3 -c 'print(hex(open("backend/dist/PluginLoader","rb").read(20)[18]))')"
+  msg2 "built for ${_machine} (expect 0xb7 = aarch64)"
+  [ "${_machine}" = "0xb7" ] \
+    || { echo "PKGBUILD: PluginLoader is not aarch64 (${_machine})" >&2; return 1; }
+}
+
+package() {
+  cd "${srcdir}/${_srcdir}"
+
+  # /usr/share, not /usr/bin. Decky owns its own updates and runs from
+  # ~/homebrew/services/PluginLoader; this is the read-only seed that
+  # /usr/lib/handheld/decky-sync copies out of on first boot. Installing it into
+  # PATH would suggest it is meant to be run directly, which it is not.
+  install -Dm0755 backend/dist/PluginLoader "${pkgdir}/usr/share/decky-loader/PluginLoader"
+
+  # decky-sync compares this against the copy in $HOME to decide whether an
+  # image update carries a newer loader than the one the user's Decky
+  # self-updated to. Must be the tag, not pkgver: this is what
+  # get_loader_version() reports and what Decky's own updater compares.
+  echo "${_tag}" | install -Dm0644 /dev/stdin "${pkgdir}/usr/share/decky-loader/.loader.version"
+
+  install -Dm0644 LICENSE "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
+}

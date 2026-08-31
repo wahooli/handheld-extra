@@ -1,0 +1,22 @@
+# The daemon owns input devices exclusively while running, so it is NOT enabled
+# automatically -- starting it on a machine that did not ask for it would take
+# the controller away from whatever is already using it. The image build enables
+# it deliberately.
+
+post_install() {
+    cat <<'MSG'
+inputplumber is installed but not enabled. To start it:
+
+    systemctl enable --now inputplumber.service
+
+It grabs input devices exclusively, so enable it only where you want it
+mediating the controller.
+MSG
+}
+
+post_upgrade() {
+    # udev rules and hwdb entries ship with this package; without a reload the
+    # running system keeps the previous generation's device matching.
+    udevadm control --reload-rules 2>/dev/null || true
+    udevadm hwdb --update 2>/dev/null || true
+}
