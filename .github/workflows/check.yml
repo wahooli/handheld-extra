@@ -92,7 +92,7 @@ jobs:
               || { echo "::error::packages/${p} has no upstream.env -- the poller would ignore it"; rc=1; continue; }
 
             # shellcheck disable=SC1090
-            ( TRACK=; GITHUB_REPO=; GIT_URL=; OCI_IMAGE=; OCI_TAG_RE=; CURRENT=
+            ( TRACK=; GITHUB_REPO=; GIT_URL=; OCI_IMAGE=; OCI_TAG_RE=; AUR_PKG=; CURRENT=
               . "${d}upstream.env"
               case "${TRACK}" in
                 none) ;;
@@ -107,6 +107,9 @@ jobs:
                 git-tag)
                   [ -n "${GIT_URL}" ] && [ -n "${CURRENT}" ] \
                     || { echo "::error::packages/${p}: TRACK=git-tag needs GIT_URL and CURRENT"; exit 1; } ;;
+                aur)
+                  [ -n "${AUR_PKG}" ] && [ -n "${CURRENT}" ] \
+                    || { echo "::error::packages/${p}: TRACK=aur needs AUR_PKG and CURRENT"; exit 1; } ;;
                 *)
                   echo "::error::packages/${p}: unknown TRACK='${TRACK}'"; exit 1 ;;
               esac ) || rc=1

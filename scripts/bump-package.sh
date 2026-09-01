@@ -36,7 +36,7 @@ IMAGE="${IMAGE:-linux-handheld-builder:latest}"
 
 # Defaults, then the package's own values. GITHUB_REPO/GIT_URL/INCLUDE_PRERELEASE
 # look unused here because upstream_latest() in lib-upstream.sh reads them.
-TRACK=; GITHUB_REPO=; GIT_URL=; OCI_IMAGE=; OCI_TAG_RE=; CURRENT=; INCLUDE_PRERELEASE=
+TRACK=; GITHUB_REPO=; GIT_URL=; OCI_IMAGE=; OCI_TAG_RE=; AUR_PKG=; CURRENT=; INCLUDE_PRERELEASE=
 PATCHES_REPO=; PATCHES_PATH=; PATCHES_REF='s/^[0-9]+-//'; VERSION_FILE=
 AUTOBUMP=yes; VERSION_VAR=pkgver; VERSION_FROM=upstream-tag; VERSION_SED='s/^v//'
 # shellcheck source=/dev/null

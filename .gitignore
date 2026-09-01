@@ -68,6 +68,8 @@ packages/*/patch-set/
 .build-report.md
 .upstream-report.md
 
+packages/gtk2/
+
 # ─── editor / OS ────────────────────────────────────────────────────────────
 .DS_Store
 *.swp

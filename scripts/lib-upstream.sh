@@ -41,7 +41,8 @@ gh_get() {
 normalise() { sed -E 's|^refs/tags/||; s/^[vV]//; s/^release-//'; }
 
 # Latest upstream version for a package whose upstream.env is already sourced.
-# Echoes the raw upstream identifier (tag or commit sha); empty on failure.
+# Echoes the raw upstream identifier -- a tag, a commit sha, or for TRACK=aur a
+# packaged pkgver-pkgrel; empty on failure.
 upstream_latest() {
     case "${TRACK}" in
         github-release)
@@ -61,6 +62,9 @@ upstream_latest() {
             ;;
         oci)
             oci_latest_tag "${OCI_IMAGE}" "${OCI_TAG_RE:-.}"
+            ;;
+        aur)
+            aur_pkg_version "${AUR_PKG}"
             ;;
         *) return 1 ;;
     esac
@@ -125,4 +129,65 @@ repo_file_value() {
     local repo="$1" ref="$2" file="$3" key="$4"
     curl -fsSL "https://raw.githubusercontent.com/${repo}/${ref}/${file}" 2>/dev/null \
         | grep -oE "^${key}=.*" | cut -d= -f2-
+}
+
+# Read a package's version from an Arch Linux ARM sync database.
+#
+#   alarm_pkg_version extra hyprland   ->  0.56.1
+#
+# This exists for packages pinned to ANOTHER package's ABI. hyprgrass carries
+# depends=('hyprland=<ver>'), an exact match, so it goes stale when ALARM moves
+# hyprland -- an axis its own GitHub releases say nothing about. Without this the
+# first sign of drift is a device whose `pacman -Syu` refuses to run.
+#
+# The sync db is what pacman itself reads, so there is no HTML to scrape and no
+# API to be rate-limited by. It is ~11 MB and cached for the life of the run.
+#
+# The pkgrel is stripped deliberately: a `pkg=<ver>` dependency with no pkgrel
+# ignores pkgrel, so hyprland 0.56.1-3 satisfies hyprland=0.56.1 and a -3 is not
+# drift.
+_ALARM_DB_DIR=
+
+alarm_pkg_version() {
+    local repo="$1" name="$2" db entry ver
+    [ -n "${_ALARM_DB_DIR}" ] || _ALARM_DB_DIR="$(mktemp -d)"
+    db="${_ALARM_DB_DIR}/${repo}.db"
+    if [ ! -s "${db}" ]; then
+        curl -fsSL --retry 3 --max-time 180 \
+            "http://mirror.archlinuxarm.org/aarch64/${repo}/${repo}.db" -o "${db}" || return 1
+    fi
+    # Entries are <name>-<pkgver>-<pkgrel>/. Requiring a DIGIT after the name is
+    # what keeps `hyprland` from also matching `hyprland-qtutils-0.1.5-1`.
+    entry="$(tar tzf "${db}" 2>/dev/null | grep -oE "^${name}-[0-9][^/]*" | sort -u | head -1)"
+    [ -n "${entry}" ] || return 1
+    ver="${entry#"${name}-"}"
+    printf '%s' "${ver%-*}"
+}
+
+# The packaged version -- pkgver-pkgrel -- of a package in the AUR.
+#
+#   aur_pkg_version gtk2   ->  2.24.33-5
+#
+# This tracks a PACKAGING axis rather than a source one, which is the right and
+# only signal for something whose upstream is finished. gtk2 is the case: GTK 2
+# ended at 2.24.33 in 2021, but CVE-2024-6655 reached users as an Arch pkgrel
+# bump carrying a new patch. Nothing in a tag list or a release feed says that
+# happened.
+#
+# The v5 RPC, addressed by PATH rather than by the ?arg[]= query form: curl
+# treats [] in a URL as a glob range unless -g is passed, and this needs no
+# extra flag to be safe.
+#
+# Fails closed. An unknown package name returns resultcount 0, `// empty` turns
+# that into no output, and the caller reports "could not read a version" rather
+# than silently treating a typo as up to date.
+aur_pkg_version() {
+    curl -fsSL --retry 2 --max-time 30 \
+        "https://aur.archlinux.org/rpc/v5/info/$1" 2>/dev/null \
+        | jq -r '.results[0].Version // empty' 2>/dev/null
+}
+
+# Read a plain `name=value` assignment out of a PKGBUILD, without sourcing it.
+pkgbuild_var() {
+    grep -oE "^$2=.*" "$1" 2>/dev/null | head -1 | cut -d= -f2- | tr -d "\"'"
 }

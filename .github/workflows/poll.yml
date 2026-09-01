@@ -25,7 +25,8 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write    # to commit the bumps
+  actions: write     # to dispatch build.yml
   issues: write
 
 concurrency:
@@ -44,15 +45,64 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: ./scripts/poll-upstreams.sh --bump
 
+      # Committed through the GraphQL API rather than `git commit && git push`,
+      # because GitHub signs commits made with a bot token server-side. The bump
+      # lands Verified and satisfies a "require signed commits" branch rule; a
+      # plain push from the runner is unsigned and would be rejected. There is no
+      # key to manage -- GITHUB_TOKEN being a bot token is the whole mechanism.
+      #
+      # expectedHeadOid makes this a compare-and-swap: if main moved between the
+      # checkout and now the mutation fails, the run goes red, and tomorrow's
+      # poll redoes the bump against the new head.
+      #
+      # The index is used purely to enumerate what changed -- `git add -A` then
+      # --diff-filter, so renames and deletions are git's problem and not a
+      # hand-rolled `git status` parse. Nothing is pushed with git.
       - name: Commit the bumps
         if: steps.poll.outputs.bumped != '0'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # Via env, not "${{ }}" inline: the list is built from upstream
+          # version strings and has no business in a shell command.
+          BUMPED: ${{ steps.poll.outputs.bumped_list }}
         run: |
           set -euo pipefail
-          git config user.name  "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add packages
-          git commit -m "chore(packages): bump ${{ steps.poll.outputs.bumped_list }}"
-          git push
+          oid="$(git rev-parse HEAD)"
+          git add -A packages
+
+          additions="$(git diff --cached --name-only --diff-filter=ACMR -- packages \
+            | while IFS= read -r f; do
+                jq -n --arg path "$f" --arg contents "$(base64 -w0 "$f")" \
+                  '{path: $path, contents: $contents}'
+              done | jq -s '.')"
+          deletions="$(git diff --cached --name-only --diff-filter=D -- packages \
+            | jq -R '{path: .}' | jq -s '.')"
+
+          # bumped != 0 with an empty diff would mean the bump script reported a
+          # change it did not make; an empty commit is not the way to find out.
+          [ "$(jq 'length' <<<"$additions")" != "0" ] || [ "$(jq 'length' <<<"$deletions")" != "0" ] || {
+            echo "!! ${BUMPED} reported as bumped but nothing under packages/ changed" >&2
+            exit 1
+          }
+
+          jq -n \
+            --arg repo "${GITHUB_REPOSITORY}" \
+            --arg branch "${GITHUB_REF_NAME}" \
+            --arg oid "${oid}" \
+            --arg headline "chore(packages): bump ${BUMPED}" \
+            --argjson additions "${additions}" \
+            --argjson deletions "${deletions}" \
+            '{
+               query: "mutation($input: CreateCommitOnBranchInput!) { createCommitOnBranch(input: $input) { commit { oid url } } }",
+               variables: { input: {
+                 branch:          { repositoryNameWithOwner: $repo, branchName: $branch },
+                 message:         { headline: $headline },
+                 expectedHeadOid: $oid,
+                 fileChanges:     { additions: $additions, deletions: $deletions }
+               } }
+             }' \
+            | gh api graphql --input - \
+                --jq '.data.createCommitOnBranch.commit | "==> committed \(.oid[0:8])  \(.url)"'
 
       # A push made with GITHUB_TOKEN does not trigger other workflows, so the
       # build has to be dispatched explicitly. Documented GitHub behaviour, not

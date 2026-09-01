@@ -15,6 +15,9 @@
 # reported instead: hyprgrass sets AUTOBUMP=no because its pkgver is composed
 # with a pinned Hyprland version, and taking a new release without checking
 # which Hyprland the image ships builds a plugin for the wrong ABI.
+# gtk2 sets it for a different reason: what it tracks is Arch's PACKAGING, so a
+# move means "somebody added a patch", and the bump is copying that patch in --
+# not rewriting a version.
 #
 # Nothing here validates that the bumped package still BUILDS -- that is the
 # build workflow's job, and it already opens an issue when it fails.
@@ -35,24 +38,52 @@ BUMP=
 # One request per GitHub-tracked package, plus a few for armada lookups.
 require_rate_limit "$(( $(ls -d packages/*/ | wc -l) * 2 ))" || exit 1
 
-BEHIND=(); ERRORS=(); BUMPED=(); CHECKED=0
+BEHIND=(); ERRORS=(); BUMPED=(); ABIDRIFT=(); CHECKED=0
 
 for conf in packages/*/upstream.env; do
     pkg="$(basename "$(dirname "${conf}")")"
     # Reset before sourcing so one package's values cannot leak into the next.
     # They look unused because upstream_latest() consumes them from the sourced
     # lib, which shellcheck cannot follow across the source boundary.
-    TRACK=; GITHUB_REPO=; GIT_URL=; OCI_IMAGE=; OCI_TAG_RE=; CURRENT=; INCLUDE_PRERELEASE=
+    TRACK=; GITHUB_REPO=; GIT_URL=; OCI_IMAGE=; OCI_TAG_RE=; AUR_PKG=; CURRENT=; INCLUDE_PRERELEASE=
+    ABI_PIN_PKG=; ABI_PIN_REPO=; ABI_PIN_VAR=
     # shellcheck source=/dev/null
     source "${conf}"
     [ "${TRACK}" = none ] && continue
     CHECKED=$((CHECKED + 1))
+
+    # A second, independent axis: some packages are pinned to ANOTHER package's
+    # version rather than only their own upstream. hyprgrass is the case --
+    # depends=('hyprland=<ver>') is an exact match, so ALARM moving hyprland
+    # makes the published package uninstallable even though hyprgrass itself has
+    # released nothing.
+    #
+    # Checked FIRST, and outside everything below, because every other path in
+    # this loop can `continue` past it -- and a package being up to date on its
+    # own axis is exactly when this is the only thing left to catch.
+    #
+    # It is reported, never auto-bumped: moving _hyprver means also finding the
+    # hyprgrass commit that targets the new Hyprland, from upstream's hyprpm.toml
+    # compatibility table. That is a lookup, not an increment.
+    if [ -n "${ABI_PIN_PKG}" ]; then
+        pinned="$(pkgbuild_var "packages/${pkg}/PKGBUILD" "${ABI_PIN_VAR}")"
+        if avail="$(alarm_pkg_version "${ABI_PIN_REPO:-extra}" "${ABI_PIN_PKG}")"; then
+            if [ -n "${pinned}" ] && [ "${pinned}" != "${avail}" ]; then
+                printf '  %-32s %-14s ABI: %s %s -> %s\n' \
+                    "${pkg}" "pin" "${ABI_PIN_PKG}" "${pinned}" "${avail}"
+                ABIDRIFT+=("${pkg}|${ABI_PIN_PKG}|${pinned}|${avail}|${ABI_PIN_VAR}")
+            fi
+        else
+            ERRORS+=("${pkg}: could not read ${ABI_PIN_REPO:-extra}/${ABI_PIN_PKG} from the ALARM sync db")
+        fi
+    fi
 
     latest="$(upstream_latest 2>/dev/null || true)"
     case "${TRACK}" in
         github-release) src="${GITHUB_REPO}" ;;
         git-tag)        src="${GIT_URL}" ;;
         oci)            src="${OCI_IMAGE}" ;;
+        aur)            src="aur/${AUR_PKG}" ;;
         *) ERRORS+=("${pkg}: unknown TRACK=${TRACK}"); continue ;;
     esac
 
@@ -76,13 +107,20 @@ for conf in packages/*/upstream.env; do
         printf '  %-32s %-14s -> %s\n' "${pkg}" "$(show "${CURRENT}")" "$(show "${latest}")"
 
         if [ -n "${BUMP}" ]; then
-            if ./scripts/bump-package.sh "${pkg}" >/tmp/bump.$$ 2>&1; then
+            # Captured on the command itself, NOT with `rc=$?` after an `if`: a
+            # false `if` condition with no else branch leaves $? at ZERO, so the
+            # exit-2 test below could never fire and every AUTOBUMP=no package
+            # was reported as a failure. Latent until now -- hyprgrass has not
+            # moved since it was written -- and gtk2 would have hit it on the
+            # first Arch pkgrel bump, which is exactly the case it exists for.
+            rc=0
+            ./scripts/bump-package.sh "${pkg}" >/tmp/bump.$$ 2>&1 || rc=$?
+            if [ "${rc}" = 0 ]; then
                 sed 's/^/      /' /tmp/bump.$$
                 BUMPED+=("${pkg}")
                 rm -f /tmp/bump.$$
                 continue                      # bumped: not "behind" any more
             fi
-            rc=$?
             sed 's/^/      /' /tmp/bump.$$; rm -f /tmp/bump.$$
             # Exit 2 means the package declares AUTOBUMP=no. That is a decision,
             # not a fault, so it is reported rather than raised as an error.
@@ -91,13 +129,14 @@ for conf in packages/*/upstream.env; do
         case "${TRACK}" in
             oci) BEHIND+=("${pkg}|${CURRENT:-none}|${latest}|https://${OCI_IMAGE%%/*}/${OCI_IMAGE#*/}") ;;
             github-release) BEHIND+=("${pkg}|${CURRENT}|${latest}|https://github.com/${GITHUB_REPO}/releases/tag/${latest}") ;;
+            aur) BEHIND+=("${pkg}|${CURRENT}|${latest}|https://aur.archlinux.org/packages/${AUR_PKG}") ;;
             *) BEHIND+=("${pkg}|${CURRENT}|${latest}|${src}") ;;
         esac
     fi
 done
 
 echo
-echo "checked ${CHECKED} package(s); ${#BUMPED[@]} bumped, ${#BEHIND[@]} behind, ${#ERRORS[@]} error(s)"
+echo "checked ${CHECKED} package(s); ${#BUMPED[@]} bumped, ${#BEHIND[@]} behind, ${#ABIDRIFT[@]} ABI-pin drift, ${#ERRORS[@]} error(s)"
 
 if [ -n "${GITHUB_OUTPUT:-}" ]; then
     {
@@ -105,6 +144,7 @@ if [ -n "${GITHUB_OUTPUT:-}" ]; then
         echo "errors=${#ERRORS[@]}"
         echo "bumped=${#BUMPED[@]}"
         echo "bumped_list=${BUMPED[*]-}"
+        echo "abidrift=${#ABIDRIFT[@]}"
     } >> "${GITHUB_OUTPUT}"
 fi
 
@@ -130,6 +170,34 @@ fi
         echo "Bumping by hand means editing its version variable, refreshing checksums"
         echo "if it has real ones, and updating \`CURRENT\` in its \`upstream.env\` --"
         echo "\`scripts/bump-package.sh <pkg>\` does all three where it can."
+    fi
+    if [ ${#ABIDRIFT[@]} -gt 0 ]; then
+        echo
+        echo "#### ABI pin drift"
+        echo
+        echo "| package | pin variable | pinned to | built against | now in ALARM |"
+        echo "|---|---|---|---|---|"
+        for d in "${ABIDRIFT[@]}"; do
+            IFS='|' read -r p dep was now var <<< "${d}"
+            echo "| \`${p}\` | \`${var}\` | \`${dep}\` | ${was} | **${now}** |"
+        done
+        echo
+        echo "These still build. The problem is on the device: each pins an exact"
+        echo "version its dependency has moved past, so \`pacman -Syu\` refuses the"
+        echo "WHOLE transaction -- nothing upgrades at all until the package is"
+        echo "rebuilt and republished."
+        echo
+        for d in "${ABIDRIFT[@]}"; do
+            IFS='|' read -r p dep was now var <<< "${d}"
+            echo '```'
+            echo "error: failed to prepare transaction (could not satisfy dependencies)"
+            echo ":: installing ${dep} (${now}) breaks dependency '${dep}=${was}' required by ${p}"
+            echo '```'
+            echo
+        done
+        echo "Fixing one is a lookup, not an increment: bump the pin variable AND the"
+        echo "matching \`_commit\`, which upstream pairs in its compatibility table"
+        echo "(\`hyprpm.toml\` for hyprgrass). Then build and publish."
     fi
     if [ ${#ERRORS[@]} -gt 0 ]; then
         echo
