@@ -47,7 +47,11 @@ pkgname=hyprgrass
 _srcver=0.8.2
 _hyprver=0.56.1
 pkgver="${_srcver}+hypr${_hyprver}"
-pkgrel=1
+# -2 is a rename, not a change: -1's object in R2 was overwritten by a rebuild of
+# the same commit, and it is served immutable, so the CDN edge still hands some
+# devices the previous bytes -- which then fail signature verification. Only a new
+# filename escapes that cache. publish-r2.sh now refuses the overwrite outright.
+pkgrel=2
 # 2026-08-13. Bump together with _hyprver whenever hyprland moves.
 #
 # If a bump does not build, upstream keeps its own compatibility matrix in

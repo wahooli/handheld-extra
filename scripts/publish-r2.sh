@@ -176,7 +176,76 @@ done
 gpg --batch --yes --export --output "${WORK}/${REPO_NAME}.gpg" "${GPGKEY}"
 
 # --------------------------------------------------------------------------
-# 2. Pull the current database, fold the new packages in
+# 2. Refuse to overwrite a filename that is already published
+# --------------------------------------------------------------------------
+# Packages go up with `Cache-Control: immutable`, which is a PROMISE that the
+# bytes behind a given filename never change. Overwriting one breaks it in the
+# nastiest way available: Cloudflare's edge keeps handing out the PREVIOUS build
+# for up to a year, while the database -- max-age=60 -- already carries the new
+# sha256 and the new signature. The device downloads a package that does not
+# match the index entry it just fetched:
+#     error: hyprgrass: signature from "handheld repo <repo@wahoo.li>" is invalid
+#     :: File /var/cache/pacman/pkg/hyprgrass-...pkg.tar.zst is corrupted
+#        (invalid or corrupted package (PGP signature)).
+# Nothing on the device fixes that -- the staleness is at the edge, and clearing
+# the pacman cache only re-downloads the same stale object. It is also invisible
+# from here: origin, database and signature are all perfectly consistent.
+#
+# It has happened once, to hyprgrass 0.8.2+hypr0.56.1-1: a comment-only edit to
+# its upstream.env re-triggered the build, the same commit rebuilt into
+# non-identical bytes, and those went to the same object name. build.sh no longer
+# rebuilds for upstream.env alone, but that only removes one way in -- a
+# Dockerfile change, a makedepend moving underneath, a manual `--all` run can all
+# rebuild an unbumped version. pkgrel is what gives new bytes a new name, so the
+# only safe answer is to stop here and say so.
+#
+# Identical bytes are fine and pass: re-running a publish that half-failed must
+# stay idempotent. Hashes come from rclone in ONE listing rather than a HEAD per
+# package; R2 returns the md5 as the etag for the single-part uploads this script
+# makes (UPLOAD_CUTOFF=5G), so it is directly comparable to md5sum here.
+if [ -z "${DRY_RUN}" ]; then
+    echo "==> checking that no published filename is being overwritten"
+    declare -A REMOTE_MD5=()
+    while IFS='|' read -r rname rhash; do
+        [ -n "${rname}" ] && REMOTE_MD5["${rname}"]="${rhash}"
+    done < <(rclone lsf "${REMOTE}" --include '*.pkg.tar.zst' \
+                 --hash MD5 --format ph --separator '|' 2>/dev/null || true)
+
+    clash=()
+    for p in "${PKGS[@]}"; do
+        b="$(basename "${p}")"
+        [ -n "${REMOTE_MD5[${b}]+x}" ] || continue          # not published yet
+        local_md5="$(md5sum "${p}" | cut -d' ' -f1)"
+        # An empty remote hash means the object exists but R2 gave no md5 for it
+        # (a multipart upload from some other tool). Unverifiable is treated as a
+        # clash on purpose: the whole point here is to never guess about bytes a
+        # device will check a signature against.
+        [ "${REMOTE_MD5[${b}]}" = "${local_md5}" ] || clash+=("${b}")
+    done
+
+    if [ ${#clash[@]} -gt 0 ]; then
+        echo "!! these are already published with DIFFERENT content:" >&2
+        printf '     %s\n' "${clash[@]}" >&2
+        cat >&2 <<'EOM'
+!!
+!! Publishing them would overwrite an object served as immutable, so devices
+!! would keep getting the old bytes with the new signature -- which reads as
+!! "signature is invalid / package is corrupted" and cannot be fixed on the
+!! device.
+!!
+!! Bump pkgrel in the PKGBUILD of each package above and rebuild. That gives the
+!! new bytes a new filename, which is the only thing that invalidates the edge.
+!! (If the rebuild is genuinely byte-identical this check passes on its own.)
+EOM
+        exit 1
+    fi
+    echo "    ok -- nothing published is being rewritten"
+else
+    echo "==> [dry-run] skipping the already-published check (needs the network)"
+fi
+
+# --------------------------------------------------------------------------
+# 3. Pull the current database, fold the new packages in
 # --------------------------------------------------------------------------
 DB="${WORK}/db"; mkdir -p "${DB}"
 # A dry run must not need the network: it exists to check the signing and
@@ -242,7 +311,7 @@ done
 echo "==> database signed"
 
 # --------------------------------------------------------------------------
-# 3. Upload -- ORDER MATTERS
+# 4. Upload -- ORDER MATTERS
 # --------------------------------------------------------------------------
 # Packages first, database last. A client that runs `pacman -Sy` in the middle
 # of a publish must never receive a database that references a package which is
@@ -272,7 +341,7 @@ rclone_ copyto "${WORK}/${REPO_NAME}.gpg" "R2:${R2_BUCKET}/${REPO_NAME}.gpg" \
     --header-upload "Cache-Control: public, max-age=300"
 
 # --------------------------------------------------------------------------
-# 4. Prune -- last, and never below what the database references
+# 5. Prune -- last, and never below what the database references
 # --------------------------------------------------------------------------
 # Keep the newest RETAIN versions per package name so a bad build can be rolled
 # back on-device with `pacman -U <url>`. Fewer than the kernel keeps: these are

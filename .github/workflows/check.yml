@@ -21,6 +21,11 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
+        with:
+          # The rename check below diffs this push (or PR) against the commit it
+          # started from, which has to actually be in the clone. The default
+          # fetch-depth of 1 has no parent and the check would skip itself.
+          fetch-depth: 0
 
       - name: Shell syntax
         run: |
@@ -68,6 +73,69 @@ jobs:
             bash -n "$i" || { echo "::error file=$i::bash syntax error"; exit 1; }
           done
           echo "$n PKGBUILDs parse"
+
+      # A rebuild must get a new filename, and this is where that is cheap to
+      # enforce. Packages are published to R2 as
+      # <pkgname>-<pkgver>-<pkgrel>-aarch64.pkg.tar.zst with
+      # `Cache-Control: immutable`, so a filename is a promise that the bytes
+      # behind it never change. Rebuild an unbumped version and the promise
+      # breaks on the DEVICE, not here: the database (max-age=60) carries the new
+      # sha256 and signature while the CDN edge keeps serving the previous build
+      # for up to a year, and pacman reports
+      #     error: <pkg>: signature from "handheld repo" is invalid
+      #     :: File ... is corrupted (invalid or corrupted package (PGP signature))
+      # which nothing on the device can clear.
+      #
+      # publish-r2.sh refuses the overwrite, so this is not the only guard -- but
+      # it refuses at the END of a build that can run two hours. One minute here
+      # is the difference between "bump pkgrel and push" and "bump pkgrel and
+      # wait for the whole thing again".
+      #
+      # upstream.env and README.md are excluded, matching build.sh: nothing in
+      # the build path reads them, so changing them is not a rebuild.
+      - name: Rebuilds get a new filename
+        env:
+          # A PR is diffed against its base, a push against where it started.
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          set -euo pipefail
+          if [ -z "${BASE}" ] || [ "${BASE}" = "0000000000000000000000000000000000000000" ] \
+             || ! git rev-parse --verify "${BASE}^{commit}" >/dev/null 2>&1; then
+            echo "no usable base commit (${BASE:-none}) -- nothing to compare"
+            exit 0
+          fi
+
+          # Sourced rather than grepped: hyprgrass composes its pkgver from
+          # _srcver and _hyprver, so the literal line says nothing useful. These
+          # are our own PKGBUILDs, they only assign variables and define
+          # functions at the top level, and `source` does not run the functions.
+          version_of() {
+            ( set +eu; pkgver=; pkgrel=; . "$1" >/dev/null 2>&1 || true
+              printf '%s-%s' "${pkgver}" "${pkgrel}" )
+          }
+
+          rc=0
+          for d in packages/*/; do
+            p="$(basename "${d}")"
+            [ -f "${d}PKGBUILD" ] || continue
+            # A package that did not exist at BASE has nothing published under
+            # any of its names yet.
+            git cat-file -e "${BASE}:${d}PKGBUILD" 2>/dev/null || continue
+            git diff --quiet "${BASE}" HEAD -- "${d}" \
+              ":(exclude)${d}upstream.env" ":(exclude)${d}README.md" && continue
+
+            git show "${BASE}:${d}PKGBUILD" > "${RUNNER_TEMP}/PKGBUILD.base"
+            was="$(version_of "${RUNNER_TEMP}/PKGBUILD.base")"
+            now="$(version_of "${d}PKGBUILD")"
+            if [ "${was}" = "${now}" ]; then
+              echo "::error file=${d}PKGBUILD::${p} changed but is still ${now} -- bump pkgrel, or the rebuild republishes a filename that is already live"
+              rc=1
+            else
+              echo "ok   ${p}: ${was} -> ${now}"
+            fi
+          done
+          [ "${rc}" = 0 ] || exit 1
+          echo "every changed package has a version of its own"
 
       - name: Package manifests
         run: |

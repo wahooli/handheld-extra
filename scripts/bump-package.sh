@@ -21,6 +21,14 @@
 #
 # It does NOT commit or build. The caller decides that, which keeps this usable
 # by hand on a package the poller refuses to touch.
+#
+# Exit codes, because the caller has to tell these apart:
+#
+#   0   bumped -- something the build consumes changed; build and publish it
+#   1   failed
+#   2   AUTOBUMP=no; this package needs a human
+#   3   tracking only -- CURRENT moved but the package did not. Commit it, do
+#       NOT build it. See the pkgrel section at the bottom for why that matters.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -86,6 +94,7 @@ esac
 # the same pkgver. Updating CURRENT is still right, but rebuilding for an
 # identical version is not -- pkgrel exists for that and the caller decides.
 oldver="$(grep -oE "^${VERSION_VAR}=.*" "${D}/PKGBUILD" | head -1 | cut -d= -f2-)"
+oldrel="$(grep -oE '^pkgrel=.*' "${D}/PKGBUILD" | head -1 | cut -d= -f2-)"
 echo "    ${VERSION_VAR}: ${oldver} -> ${newver}"
 [ "${oldver}" = "${newver}" ] && echo "    (version unchanged; only the tracked ref moved)"
 [ -n "${newcommit}" ] && echo "    _commit: -> ${newcommit:0:12}"
@@ -95,9 +104,9 @@ if [ -n "${DRY_RUN}" ]; then echo "    [dry-run] nothing written"; exit 0; fi
 # ── edit ─────────────────────────────────────────────────────────────────────
 sed -i -E "s|^${VERSION_VAR}=.*|${VERSION_VAR}=${newver}|" "${D}/PKGBUILD"
 [ -n "${newcommit}" ] && sed -i -E "s|^_commit=.*|_commit=${newcommit}|" "${D}/PKGBUILD"
-# pkgrel resets on a version change: it counts rebuilds of one version.
-sed -i -E "s|^pkgrel=.*|pkgrel=1|" "${D}/PKGBUILD"
 sed -i -E "s|^CURRENT=.*|CURRENT=${latest}|" "${D}/upstream.env"
+# pkgrel is decided at the END, once the patch set and the checksums have been
+# refreshed and it is possible to see whether anything the BUILD consumes moved.
 
 # A package with an external patch set gets it refetched: a new artifact means
 # the patches that went into it may have moved too.
@@ -119,6 +128,50 @@ if grep -qE "^(sha256sums|sha512sums|b2sums|md5sums)=\(" "${D}/PKGBUILD" \
     docker run --rm -v "${HERE}:/w" --user root alpine:3 chown -R "$(id -u):$(id -g)" /w/packages >/dev/null 2>&1
 else
     echo "    checksums are SKIP or absent -- nothing to refresh"
+fi
+
+# ── pkgrel, and whether this is a rebuild at all ─────────────────────────────
+# The published filename is <pkgname>-<pkgver>-<pkgrel>-<arch>.pkg.tar.zst, and
+# publish-r2.sh will not overwrite one that already exists with different bytes
+# -- packages are served with `Cache-Control: immutable`, so reusing a name
+# leaves the CDN handing devices the OLD bytes against the NEW signature. Every
+# rebuild therefore needs a name of its own, and pkgrel is what supplies it.
+#
+# Three cases, and the middle one is the one this exists for:
+#
+#   version moved          pkgrel=1        new pkgver already gives a new name
+#   version same, build    pkgrel+1        umtp-responder and inputplumber track
+#     inputs moved                         armada's BASE.env, where a commit can
+#                                          move COMMIT or the patch set without
+#                                          moving VERSION; gamescope's oci-tag
+#                                          can map two tags onto one pkgver
+#   version same, only     unchanged       nothing to rebuild. Exit 3 so the
+#     CURRENT moved                        caller commits it WITHOUT building.
+#
+# It used to be an unconditional `pkgrel=1` here, which got both of the last two
+# wrong: it rebuilt and republished an identical version under its existing
+# filename, and -- worse -- a pkgrel that had been raised BY HAND to escape a
+# poisoned name was silently reset back onto it.
+#
+# --untracked-files=all because fetch-patch-set.sh writes new .patch files, and
+# a plain `git diff` cannot see those. upstream.env is excluded on purpose: it is
+# the tracking record, and nothing in the build path reads it (build.sh excludes
+# it from change detection for the same reason).
+if [ "${oldver}" != "${newver}" ]; then
+    sed -i -E "s|^pkgrel=.*|pkgrel=1|" "${D}/PKGBUILD"
+    echo "    pkgrel: ${oldrel} -> 1  (version moved)"
+else
+    mapfile -t dirty < <(git status --porcelain --untracked-files=all -- "${D}" \
+        | awk '{print $NF}' | grep -v "^${D}/upstream.env$" || true)
+    if [ ${#dirty[@]} -eq 0 ]; then
+        echo "==> ${PKG}: only the tracked ref moved (CURRENT=${latest}); nothing to rebuild"
+        exit 3
+    fi
+    case "${oldrel}" in
+        ''|*[!0-9]*) echo "!! ${PKG}: pkgrel '${oldrel}' is not an integer; bump it by hand" >&2; exit 1 ;;
+    esac
+    sed -i -E "s|^pkgrel=.*|pkgrel=$((oldrel + 1))|" "${D}/PKGBUILD"
+    echo "    pkgrel: ${oldrel} -> $((oldrel + 1))  (same ${VERSION_VAR}, but $(printf '%s ' "${dirty[@]}")changed)"
 fi
 
 bash -n "${D}/PKGBUILD" || { echo "!! ${PKG}: PKGBUILD no longer parses after the bump" >&2; exit 1; }

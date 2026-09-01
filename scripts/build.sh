@@ -49,7 +49,15 @@ changed_packages() {
     git rev-parse --verify "${ref}" >/dev/null 2>&1 || {
         echo "!! not a valid git ref: ${ref}" >&2; return 1; }
     for p in $(all_packages); do
-        git diff --quiet "${ref}" HEAD -- "packages/${p}" || echo "${p}"
+        # upstream.env and README.md are excluded because nothing in the build
+        # path reads them: the poller and bump-package.sh do, makepkg does not.
+        # Rebuilding for them is not merely wasted CI -- it republishes the SAME
+        # pkgver-pkgrel with different bytes, and publish-r2.sh now refuses that
+        # outright (see the name-immutability check there for why). A comment-only
+        # edit to hyprgrass/upstream.env is exactly how that first went wrong.
+        git diff --quiet "${ref}" HEAD -- "packages/${p}" \
+            ":(exclude)packages/${p}/upstream.env" \
+            ":(exclude)packages/${p}/README.md" || echo "${p}"
     done
 }
 

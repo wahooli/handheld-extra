@@ -58,13 +58,22 @@ jobs:
       # The index is used purely to enumerate what changed -- `git add -A` then
       # --diff-filter, so renames and deletions are git's problem and not a
       # hand-rolled `git status` parse. Nothing is pushed with git.
+      #
+      # Runs for tracking-only updates too, not just bumps. When an upstream ref
+      # moves without moving anything the package builds from, bump-package.sh
+      # exits 3 and edits nothing but CURRENT. That still has to be committed --
+      # otherwise every poll rediscovers it and reports it again forever -- while
+      # the build below deliberately does NOT run for it. Rebuilding an unchanged
+      # pkgver-pkgrel republishes a filename that is already live and served
+      # immutable, which is how a device gets old bytes against a new signature.
       - name: Commit the bumps
-        if: steps.poll.outputs.bumped != '0'
+        if: ${{ steps.poll.outputs.bumped != '0' || steps.poll.outputs.tracked != '0' }}
         env:
           GH_TOKEN: ${{ github.token }}
           # Via env, not "${{ }}" inline: the list is built from upstream
           # version strings and has no business in a shell command.
           BUMPED: ${{ steps.poll.outputs.bumped_list }}
+          TRACKED: ${{ steps.poll.outputs.tracked_list }}
         run: |
           set -euo pipefail
           oid="$(git rev-parse HEAD)"
@@ -78,18 +87,28 @@ jobs:
           deletions="$(git diff --cached --name-only --diff-filter=D -- packages \
             | jq -R '{path: .}' | jq -s '.')"
 
-          # bumped != 0 with an empty diff would mean the bump script reported a
-          # change it did not make; an empty commit is not the way to find out.
+          # A reported change with an empty diff would mean the bump script said
+          # it edited something it did not; an empty commit is not the way to
+          # find that out.
           [ "$(jq 'length' <<<"$additions")" != "0" ] || [ "$(jq 'length' <<<"$deletions")" != "0" ] || {
-            echo "!! ${BUMPED} reported as bumped but nothing under packages/ changed" >&2
+            echo "!! ${BUMPED} ${TRACKED} reported as changed but nothing under packages/ changed" >&2
             exit 1
           }
+
+          # "bump" and "track" are named separately in the subject because they
+          # mean different things to anyone reading the log later: bumped
+          # packages were rebuilt and republished, tracked ones only had CURRENT
+          # updated and were deliberately not built.
+          headline="chore(packages):"
+          [ -n "${BUMPED}" ] && headline="${headline} bump ${BUMPED}"
+          [ -n "${BUMPED}" ] && [ -n "${TRACKED}" ] && headline="${headline};"
+          [ -n "${TRACKED}" ] && headline="${headline} track ${TRACKED}"
 
           jq -n \
             --arg repo "${GITHUB_REPOSITORY}" \
             --arg branch "${GITHUB_REF_NAME}" \
             --arg oid "${oid}" \
-            --arg headline "chore(packages): bump ${BUMPED}" \
+            --arg headline "${headline}" \
             --argjson additions "${additions}" \
             --argjson deletions "${deletions}" \
             '{

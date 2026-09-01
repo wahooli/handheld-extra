@@ -38,7 +38,7 @@ BUMP=
 # One request per GitHub-tracked package, plus a few for armada lookups.
 require_rate_limit "$(( $(ls -d packages/*/ | wc -l) * 2 ))" || exit 1
 
-BEHIND=(); ERRORS=(); BUMPED=(); ABIDRIFT=(); CHECKED=0
+BEHIND=(); ERRORS=(); BUMPED=(); TRACKED=(); ABIDRIFT=(); CHECKED=0
 
 for conf in packages/*/upstream.env; do
     pkg="$(basename "$(dirname "${conf}")")"
@@ -121,6 +121,19 @@ for conf in packages/*/upstream.env; do
                 rm -f /tmp/bump.$$
                 continue                      # bumped: not "behind" any more
             fi
+            # Exit 3: the tracked ref moved but the package did not -- an armada
+            # commit that touched neither VERSION, COMMIT nor the patch set. The
+            # CURRENT edit is worth committing so tomorrow's poll does not report
+            # it again, but building it is not: it would rebuild the same
+            # pkgver-pkgrel into non-identical bytes and publish-r2.sh would
+            # refuse to overwrite the name that is already live. Kept out of
+            # bumped_list, which is what poll.yml dispatches a build for.
+            if [ "${rc}" = 3 ]; then
+                sed 's/^/      /' /tmp/bump.$$
+                TRACKED+=("${pkg}")
+                rm -f /tmp/bump.$$
+                continue
+            fi
             sed 's/^/      /' /tmp/bump.$$; rm -f /tmp/bump.$$
             # Exit 2 means the package declares AUTOBUMP=no. That is a decision,
             # not a fault, so it is reported rather than raised as an error.
@@ -136,7 +149,7 @@ for conf in packages/*/upstream.env; do
 done
 
 echo
-echo "checked ${CHECKED} package(s); ${#BUMPED[@]} bumped, ${#BEHIND[@]} behind, ${#ABIDRIFT[@]} ABI-pin drift, ${#ERRORS[@]} error(s)"
+echo "checked ${CHECKED} package(s); ${#BUMPED[@]} bumped, ${#TRACKED[@]} tracking-only, ${#BEHIND[@]} behind, ${#ABIDRIFT[@]} ABI-pin drift, ${#ERRORS[@]} error(s)"
 
 if [ -n "${GITHUB_OUTPUT:-}" ]; then
     {
@@ -144,6 +157,8 @@ if [ -n "${GITHUB_OUTPUT:-}" ]; then
         echo "errors=${#ERRORS[@]}"
         echo "bumped=${#BUMPED[@]}"
         echo "bumped_list=${BUMPED[*]-}"
+        echo "tracked=${#TRACKED[@]}"
+        echo "tracked_list=${TRACKED[*]-}"
         echo "abidrift=${#ABIDRIFT[@]}"
     } >> "${GITHUB_OUTPUT}"
 fi
@@ -155,6 +170,18 @@ fi
         echo "#### Bumped and building"
         echo
         printf -- '- `%s`\n' "${BUMPED[@]}"
+        echo
+    fi
+    if [ -n "${BUMP}" ] && [ ${#TRACKED[@]} -gt 0 ]; then
+        echo "#### Tracking updated, not rebuilt"
+        echo
+        printf -- '- `%s`\n' "${TRACKED[@]}"
+        echo
+        echo "The tracked ref moved without moving anything the package builds from,"
+        echo "so only \`CURRENT\` changed. Rebuilding would republish the same"
+        echo "\`pkgver-pkgrel\` under a filename that is already live and served"
+        echo "immutable, which is how a device ends up with the old bytes and the new"
+        echo "signature."
         echo
     fi
     if [ ${#BEHIND[@]} -gt 0 ]; then
