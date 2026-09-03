@@ -8,12 +8,12 @@
 # Maintainer: Waltteri Hooli <1420194+wahooli@users.noreply.github.com>
 
 pkgname=inputplumber
-pkgver=0.77.2
+pkgver=0.78.1
 pkgrel=1
 # armada's BASE.env COMMIT. Their patches are written against this exact commit,
 # so following the upstream tag instead would build something they have not
 # tested the fixes on.
-_commit=85f5fd5c52e414cc01f59f9754c0eb71a5a91b7e
+_commit=23f84b78521a4e12f2ff7b16fa9e0dc03ccb1846
 _appname=InputPlumber
 pkgdesc='Input router and remapper daemon for handheld gaming devices'
 arch=(aarch64)

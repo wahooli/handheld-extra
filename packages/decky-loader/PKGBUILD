@@ -18,7 +18,7 @@
 pkgname=decky-loader
 # `pip show` normalises the tag to this; decky's own get_loader_version()
 # reports it back as v3.2.8-pre1. Keep _tag and pkgver in step.
-pkgver=3.2.8rc1
+pkgver=3.2.8
 _tag=v3.2.8-pre1
 pkgrel=1
 pkgdesc='Plugin loader for the Steam Deck UI (native aarch64 build)'
