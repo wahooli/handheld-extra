@@ -39,7 +39,7 @@ pkgname=gamescope
 # with the dash swapped for a dot because pkgver forbids dashes. Tying the
 # version to their artifact rather than inventing one means `pacman -Q gamescope`
 # names exactly which armada build this is.
-pkgver=20260830.2c93e73c
+pkgver=20260905.9371e875
 pkgrel=1
 pkgdesc='SteamOS session compositing window manager (OGC fork + armada handheld patches)'
 arch=(aarch64)
