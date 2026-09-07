@@ -1,0 +1,91 @@
+--- a/src/winesync.h
++++ b/src/winesync.h
+@@ -16,14 +16,26 @@
+             {"ntsync", "NTsync"},
+         };
+ 
+-        pid_t pid;
++        pid_t pid = -1;
++        bool checked = false;
+         std::string method = "NONE";
+         bool inside_wine = true;
+     public:
+         void determine_sync_variant() {
+ #ifdef __linux__
+-            // check that's were inside wine
+-            std::string wineProcess = get_exe_path();
++            // Check that the process we are REPORTING ON is inside wine, not
++            // the process we happen to be running in. Under mangoapp the
++            // overlay is its own program -- /proc/self/exe is
++            // /usr/bin/mangoapp -- so inspecting ourselves marked every
++            // gamescope session "not wine" and hid the element, even though
++            // the game is an ordinary wine-preloader process. lib_loaded()
++            // below already maps pid -1 to "self"; use the same rule here so
++            // the LD_PRELOAD case keeps working unchanged.
++            std::string who = pid > 0 ? std::to_string(pid) : "self";
++            // "/proc" spelled out to match lib_loaded(), which hardcodes it
++            // too; PROCDIR is private to file_utils.cpp.
++            std::string wineProcess =
++                read_symlink(("/proc/" + who + "/exe").c_str());
+             auto n = wineProcess.find_last_of('/');
+             std::string preloader = wineProcess.substr(n + 1);
+             if (preloader != "wine-preloader" && preloader != "wine64-preloader"){
+@@ -31,14 +43,25 @@
+                 return;
+             }
+ 
++            inside_wine = true;
++
++            // Re-scanned whenever the pid changes, so start from scratch --
++            // otherwise a stale method sticks after switching processes.
++            method = "NONE";
++
+             for (auto& [key, val] : methods) {
++                // "NONE" is the sentinel, not something to look for; searching
++                // for it would match any path containing "none".
++                if (key == "NONE")
++                    continue;
++
+                 if (lib_loaded(key, pid)) {
+                     method = key;
+                     break;
+                 }
+             }
+ 
+-            SPDLOG_DEBUG("Wine sync method: {}", methods.at(method));
++            SPDLOG_DEBUG("Wine sync method for pid {}: {}", who, methods.at(method));
+ #endif
+         }
+ 
+@@ -52,7 +75,14 @@
+         }
+ 
+         void set_pid(pid_t _pid) {
+-            if (_pid != pid) {
++            // Run at least once even if the pid never changes. Outside
++            // gamescope g_gamescopePid stays -1 forever, which matches the
++            // initial value, so a pure inequality test would never evaluate
++            // anything and the element would report NONE for the whole
++            // session. (Upstream only avoided this by comparing against an
++            // uninitialised pid, i.e. by luck.)
++            if (!checked || _pid != pid) {
++                checked = true;
+                 pid = _pid;
+                 determine_sync_variant();
+             }
+--- a/src/hud_elements.cpp
++++ b/src/hud_elements.cpp
+@@ -1686,8 +1686,12 @@
+     if (!winesync_ptr)
+         winesync_ptr = std::make_unique<WineSync>();
+ 
++    // Set the pid BEFORE asking whether it is a wine process: valid() is
++    // answering a question about that pid, and answering it first meant the
++    // check ran against a stale/unset one.
++    winesync_ptr->set_pid(HUDElements.g_gamescopePid);
++
+     if (winesync_ptr->valid()) {
+-        winesync_ptr->set_pid(HUDElements.g_gamescopePid);
+         ImGui::PushFont(HUDElements.sw_stats->font_secondary);
+         ImguiNextColumnFirstItem();
+         HUDElements.TextColored(HUDElements.colors.engine, "%s", "WSYNC");

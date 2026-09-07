@@ -1,0 +1,284 @@
+--- a/src/battery.cpp
++++ b/src/battery.cpp
+@@ -1,22 +1,77 @@
+ #include <spdlog/spdlog.h>
+ #include <filesystem.h>
++#include <fstream>
+ #include "battery.h"
+ 
+ namespace fs = ghc::filesystem;
+ using namespace std;
+ 
++static std::string read_psy_attr(const fs::path& dir, const char* attr)
++{
++    std::ifstream stream(dir / attr);
++    std::string value;
++
++    std::getline(stream, value);
++
++    return value;
++}
++
++// A power_supply attribute can exist as a file and still fail every read: the
++// driver publishes the property but returns an error for it. qcom_battmgr does
++// exactly that with charge_now/charge_full on batteries that report energy, so
++// fs::exists() is not a usable test for "this reading is available" -- the
++// value has to actually come back and parse.
++static bool read_psy_value(const std::string& path, float& out)
++{
++    std::ifstream stream(path);
++    std::string line;
++
++    if (!std::getline(stream, line) || line.empty())
++        return false;
++
++    try {
++        out = std::stof(line);
++    } catch (const std::exception&) {
++        return false;
++    }
++
++    return true;
++}
++
+ void BatteryStats::numBattery() {
+     int batteryCount = 0;
+     if (!fs::exists("/sys/class/power_supply/")) {
+          batteryCount = 0;
+     }
+     fs::path path("/sys/class/power_supply/");
++    const int batt_max = sizeof(battPath) / sizeof(battPath[0]);
++
+     for (auto& p : fs::directory_iterator(path)) {
+-        string fileName = p.path().filename();
+-        if (fileName.find("BAT") != std::string::npos) {
+-            battPath[batteryCount] = p.path();
+-            batteryCount += 1;
++        if (batteryCount >= batt_max) {
++            SPDLOG_DEBUG("battery: more than {} batteries, ignoring the rest",
++                         batt_max);
++            break;
+         }
++
++        // Match on the power_supply type rather than hunting for "BAT" in the
++        // node name. That name is vendor-chosen and only conventionally
++        // uppercase -- Qualcomm's battmgr calls it "qcom-battmgr-bat" and
++        // Android-derived trees just "battery", so the substring test finds no
++        // battery at all and every battery reading silently reads zero.
++        if (read_psy_attr(p.path(), "type") != "Battery")
++            continue;
++
++        // Peripherals -- game controllers, bluetooth mice -- also register as
++        // type "Battery". The kernel scopes those to the device they power,
++        // and they are not the system battery the HUD is asking about. The old
++        // name match skipped them by luck; matching on type has to be explicit.
++        if (read_psy_attr(p.path(), "scope") == "Device")
++            continue;
++
++        SPDLOG_DEBUG("battery: using {}", p.path().string());
++
++        battPath[batteryCount] = p.path();
++        batteryCount += 1;
+     }
+     batt_count = batteryCount;
+     batt_check = true;
+@@ -43,47 +98,35 @@
+     float charge_f = 0;
+     for(int i = 0; i < batt_count; i++) {
+         string syspath = battPath[i];
+-        string charge_now = syspath + "/charge_now";
+-        string charge_full = syspath + "/charge_full";
+-        string energy_now = syspath + "/energy_now";
+-        string energy_full = syspath + "/energy_full";
+-        string capacity = syspath + "/capacity";
++        float now = 0, full = 0;
+ 
+-        if (fs::exists(charge_now)) {
+-            std::ifstream input(charge_now);
+-            std::string line;
+-            if(std::getline(input, line)) {
+-                charge_n += (stof(line) / 1000000);
+-            }
+-            std::ifstream input2(charge_full);
+-            if(std::getline(input2, line)) {
+-                charge_f += (stof(line) / 1000000);
+-            }
+-        }
+-
+-        else if (fs::exists(energy_now)) {
+-            std::ifstream input(energy_now);
+-            std::string line;
+-            if(std::getline(input, line)) {
+-                charge_n += (stof(line) / 1000000);
+-            }
+-            std::ifstream input2(energy_full);
+-            if(std::getline(input2, line)) {
+-                charge_f += (stof(line) / 1000000);
+-            }
++        // Charge (uAh), else energy (uWh), else the plain capacity percentage.
++        // Each pair is chosen on whether it READS, not on whether the file is
++        // present: qcom_battmgr publishes charge_now and charge_full and then
++        // errors out on every read of them, which left both accumulators at
++        // zero and returned 0/0 = nan.
++        if (read_psy_value(syspath + "/charge_now", now) &&
++            read_psy_value(syspath + "/charge_full", full)) {
++            charge_n += now / 1000000;
++            charge_f += full / 1000000;
++        }
++
++        else if (read_psy_value(syspath + "/energy_now", now) &&
++                 read_psy_value(syspath + "/energy_full", full)) {
++            charge_n += now / 1000000;
++            charge_f += full / 1000000;
+         }
+ 
+-        else {
+-            // using /sys/class/power_supply/BAT*/capacity
++        else if (read_psy_value(syspath + "/capacity", now)) {
+             // No way to get an accurate reading just average the percents if mutiple batteries
+-            std::ifstream input(capacity);
+-            std::string line;
+-            if(std::getline(input, line)) {
+-                charge_n += stof(line) / 100;
+-                charge_f = batt_count;
+-            }
++            charge_n += now / 100;
++            charge_f = batt_count;
+         }
+     }
++
++    if (charge_f <= 0)
++        return 0.0f;
++
+     return (charge_n / charge_f) * 100;
+ }
+ 
+@@ -111,35 +154,18 @@
+             return 0.0f;
+         }
+ 
++        float p_uw = 0.0f;
++        float i_ua = 0.0f;
++        float v_uv = 0.0f;
++
+         // Prefer power_now (µW) when available.
+-        if (fs::exists(power_now)) {
+-            std::ifstream input(power_now);
+-            std::string line;
+-            if (std::getline(input, line)) {
+-                power_w += std::fabs(stof(line)) / 1000000.0f;
+-            }
++        if (read_psy_value(power_now, p_uw)) {
++            power_w += std::fabs(p_uw) / 1000000.0f;
+             continue;
+         }
+ 
+-        if (fs::exists(current_now) && fs::exists(voltage_now)) {
+-            float i_ua = 0.0f;
+-            float v_uv = 0.0f;
+-
+-            {
+-                std::ifstream input(current_now);
+-                std::string line;
+-                if (std::getline(input, line)) {
+-                    i_ua = stof(line);
+-                }
+-            }
+-            {
+-                std::ifstream input(voltage_now);
+-                std::string line;
+-                if (std::getline(input, line)) {
+-                    v_uv = stof(line);
+-                }
+-            }
+-
++        if (read_psy_value(current_now, i_ua) &&
++            read_psy_value(voltage_now, v_uv)) {
+             power_w += (std::fabs(i_ua) * std::fabs(v_uv)) * 1e-12f;
+         }
+     }
+@@ -159,66 +185,26 @@
+         string voltage_now = syspath + "/voltage_now";
+         string power_now = syspath + "/power_now";
+ 
+-        if (fs::exists(current_now)) {
+-            std::ifstream input(current_now);
+-            std::string line;
+-            if (std::getline(input, line)) {
+-                current_now_vec.push_back(std::fabs(stof(line)));
+-            }
+-        } else if (fs::exists(power_now) && fs::exists(voltage_now)) {
+-            float voltage = 0.0f;
+-            float power = 0.0f;
+-
+-            {
+-                std::ifstream input_voltage(voltage_now);
+-                std::string line;
+-                if (std::getline(input_voltage, line)) {
+-                    voltage = stof(line);
+-                }
+-            }
+-            {
+-                std::ifstream input_power(power_now);
+-                std::string line;
+-                if (std::getline(input_power, line)) {
+-                    power = stof(line);
+-                }
+-            }
++        float value = 0.0f;
++        float voltage = 0.0f;
+ 
+-            if (voltage > 0.0f) {
+-                // (µW / µV) = µA
+-                current_now_vec.push_back(std::fabs(power) / voltage);
+-            }
+-        }
++        read_psy_value(voltage_now, voltage);
+ 
+-        if (fs::exists(charge_now)) {
+-            std::ifstream input(charge_now);
+-            std::string line;
+-            if (std::getline(input, line)) {
+-                charge += stof(line);
+-            }
+-        } else if (fs::exists(energy_now) && fs::exists(voltage_now)) {
+-            float energy = 0.0f;
+-            float voltage = 0.0f;
+-
+-            {
+-                std::ifstream input_energy(energy_now);
+-                std::string line;
+-                if (std::getline(input_energy, line)) {
+-                    energy = stof(line);
+-                }
+-            }
+-            {
+-                std::ifstream input_voltage(voltage_now);
+-                std::string line;
+-                if (std::getline(input_voltage, line)) {
+-                    voltage = stof(line);
+-                }
+-            }
+-
+-            if (voltage > 0.0f) {
+-                // (µWh / µV) = µAh
+-                charge += energy / voltage;
+-            }
++        if (read_psy_value(current_now, value)) {
++            current_now_vec.push_back(std::fabs(value));
++        } else if (read_psy_value(power_now, value) && voltage > 0.0f) {
++            // (µW / µV) = µA
++            current_now_vec.push_back(std::fabs(value) / voltage);
++        }
++
++        // Same story as getPercent(): charge_now exists on this hardware and
++        // never reads, so it has to lose to energy_now on the read, not on
++        // fs::exists(), or the remaining time is permanently 0.
++        if (read_psy_value(charge_now, value)) {
++            charge += value;
++        } else if (read_psy_value(energy_now, value) && voltage > 0.0f) {
++            // (µWh / µV) = µAh
++            charge += value / voltage;
+         }
+ 
+         if (current_now_vec.size() > 25) {

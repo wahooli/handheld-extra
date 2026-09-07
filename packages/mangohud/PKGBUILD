@@ -37,8 +37,9 @@ _pkgname=MangoHud
 pkgname=mangohud
 pkgver=0.8.4
 # Bumped from Arch's -1: this is a different build of the same version (no NVIDIA
-# support, no plotting deps), and the pkgrel is the only place to say so.
-pkgrel=2
+# support, no plotting deps, plus the msm GPU-metrics, battery and winesync patches), and the pkgrel is
+# the only place to say so.
+pkgrel=5
 pkgdesc='Vulkan overlay for FPS/temps/CPU-GPU load, plus mangoapp for gamescope'
 arch=('aarch64')
 url="https://github.com/flightlessmango/MangoHud"
@@ -58,10 +59,16 @@ depends=('dbus' 'fmt' 'glfw' 'hicolor-icon-theme' 'libglvnd' 'libx11'
 # and this build contains it.
 provides=('mangoapp')
 conflicts=('mangoapp')
-source=("$pkgname-$pkgver.tar.xz::https://github.com/flightlessmango/MangoHud/releases/download/v$pkgver/$_pkgname-v$pkgver-Source.tar.xz")
-# Same tarball as Arch's, so their checksum carries over verbatim — integrity for
-# free rather than a SKIP.
-b2sums=('06bdfcd26e14ff544e4dea4e39b8f7da6119d87fc7e14f381cf8c47bba69508a4768b8584600424adb8ca2a2f6f4c2d84d63683addeb83bd0dd9a1e055febdb8')
+source=("$pkgname-$pkgver.tar.xz::https://github.com/flightlessmango/MangoHud/releases/download/v$pkgver/$_pkgname-v$pkgver-Source.tar.xz"
+        '0001-msm-report-adreno-gpu-metrics.patch'
+        '0002-battery-match-power-supply-type-not-name.patch'
+        '0003-winesync-check-the-target-pid-not-our-own.patch')
+# First sum is the same tarball as Arch's, so their checksum carries over
+# verbatim — integrity for free rather than a SKIP.
+b2sums=('06bdfcd26e14ff544e4dea4e39b8f7da6119d87fc7e14f381cf8c47bba69508a4768b8584600424adb8ca2a2f6f4c2d84d63683addeb83bd0dd9a1e055febdb8'
+        '11330716f9bbbb87d21e1f5d1f538ed0c55ee80b1c49668822a61e5eb7c48f6f3419e47c447542f9e0d320047dc77388c83af52fe551c70d1203562cdfd7ed4e'
+        '96b4afce0d5cd6224e8b35187f25bc021b63117454c2bee6e80f6d26d57c5541c3ef9cd52cc91c63c0863345a34f9d4fe94def13cc43c7295bdf56779e3f3b7d'
+        '6eeab919838c2cfd775a88d5438ec76eda18d9b8da8ba84c7818eb5c68b5eb0a431c3ff4507b8374f504fd84440c1ad4ae39759ce2f573a0ee78da80d7ace2de')
 
 prepare() {
     cd "$_pkgname-v$pkgver"
@@ -70,6 +77,41 @@ prepare() {
     # download it. Straight from Arch's packaging.
     sed --in-place "s/  cmocka = subproject('cmocka')//g" meson.build
     sed --in-place "s/cmocka_dep = cmocka.get_variable('cmocka_dep')/cmocka_dep = dependency('cmocka')/g" meson.build
+
+    # Every GPU field reads zero on Adreno without this — 0%, 0 MHz, 0°C, 0 W.
+    # MangoHud lists msm_dpu as supported and wires up the right fdinfo engine
+    # key, but then filters fds by comparing fdinfo's "drm-driver" (which the
+    # kernel sets to "msm") against the sysfs driver name ("msm_dpu"), so no fd
+    # ever matches. Same string mixup kills the hwmon lookup, and nothing ever
+    # opened a clock source for msm at all. Upstream at v0.8.4; recheck on bump.
+    patch -Np1 -i "$srcdir/0001-msm-report-adreno-gpu-metrics.patch"
+
+    # Two bugs, both of which have to go for any battery field to work here.
+    #
+    # MangoHud finds the system battery by looking for "BAT" in the
+    # power_supply node name. Qualcomm's is "qcom-battmgr-bat", so it finds
+    # nothing, logs "No battery found", and every battery field -- including
+    # battery_watt, the only wattage reading this SoC exposes at all -- reads
+    # zero. Matching on the power_supply type instead also covers Android-style
+    # "battery" nodes, and skips peripherals that report type Battery but are
+    # scoped to a single device (controllers, bluetooth mice).
+    #
+    # Then getPercent()/getTimeRemaining() pick their data source with
+    # fs::exists(). qcom_battmgr publishes charge_now and charge_full and
+    # errors out on every read of them, so those win the exists() test, read
+    # nothing, and yield 0/0 = nan percent and 0 h remaining. Choose the source
+    # by whether it actually reads. Upstream at v0.8.4; recheck on bump.
+    patch -Np1 -i "$srcdir/0002-battery-match-power-supply-type-not-name.patch"
+
+    # The winesync element (WSYNC: NTsync/Fsync/Esync) never appears under
+    # gamescope. It decides "are we inside wine?" from its OWN /proc/self/exe,
+    # which under mangoapp is /usr/bin/mangoapp, never a wine preloader -- so
+    # it hides itself even though the game it reports on is plain Proton. It
+    # already receives the game pid for the library scan; use that pid for the
+    # exe check too. Also runs the check at least once: outside gamescope the
+    # pid is -1 forever, and the old inequality test only fired because it was
+    # comparing against an uninitialised member. Upstream at v0.8.4.
+    patch -Np1 -i "$srcdir/0003-winesync-check-the-target-pid-not-our-own.patch"
 }
 
 build() {

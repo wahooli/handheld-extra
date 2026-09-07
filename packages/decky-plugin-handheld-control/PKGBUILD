@@ -3,9 +3,10 @@
 #
 # The Deck UI already renders power profile and GPU clock, driven over
 # com.steampowered.SteamOSManager1 (see overlay/usr/libexec/handheld/). What it
-# has no concept of at all is a FAN CURVE, and that is the control this plugin
-# exists to add — plus a live temperature/PWM/RPM readout, which is what makes a
-# fan curve verifiable on real hardware rather than a guess.
+# has no concept of at all is a FAN CURVE or a CPU CLOCK, and those are the two
+# controls this plugin exists to add — plus a live temperature/PWM/RPM and
+# per-cluster clock readout, which is what makes either of them verifiable on
+# real hardware rather than a guess.
 #
 # ── why not port armada-control ────────────────────────────────────────────────
 # Armada ships a far bigger plugin, and almost none of it would work here:
@@ -25,9 +26,9 @@
 # — same as the patched packages here carry their own patches/.
 
 pkgname=decky-plugin-handheld-control
-pkgver=1.0.0
+pkgver=1.1.0
 pkgrel=1
-pkgdesc='Decky plugin: fan curve, power profile and live thermals via org.handheld.Power1'
+pkgdesc='Decky plugin: fan curve, CPU clock pin, power profile and live thermals via org.handheld.Power1'
 arch=('aarch64')
 url='https://github.com/SteamDeckHomebrew/decky-loader'
 license=('GPL-2.0-or-later')

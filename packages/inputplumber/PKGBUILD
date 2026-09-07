@@ -9,7 +9,7 @@
 
 pkgname=inputplumber
 pkgver=0.78.1
-pkgrel=1
+pkgrel=2
 # armada's BASE.env COMMIT. Their patches are written against this exact commit,
 # so following the upstream tag instead would build something they have not
 # tested the fixes on.
@@ -35,6 +35,17 @@ unset _p
 
 prepare() {
   cd "${_appname}-${_commit}"
+
+  # An empty patch set is not a build of this package, it is a build of stock
+  # upstream wearing its name -- and until scripts/build.sh learned to fetch
+  # patch-set/, that is exactly what CI published. The loop below cannot catch
+  # it: it iterates _patches, so with nothing in it there is nothing to notice.
+  [ ${#_patches[@]} -gt 0 ] || {
+    echo "::  no patches in ${startdir}/patch-set -- run scripts/fetch-patch-set.sh inputplumber"
+    echo "::  refusing to build: without armada's fixes this is stock InputPlumber"
+    echo "::  at an armada-pinned commit -- a combination nobody has tested."
+    return 1
+  }
   local p f
   for p in "${_patches[@]}"; do
     f="${startdir}/patch-set/${p}"

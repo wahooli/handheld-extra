@@ -1,0 +1,360 @@
+# NetworkManager, rebuilt for aarch64 with armada's suspend patch.
+#
+# The patch stops NM deactivating managed devices across system suspend when
+# /etc/NetworkManager/ignore-sleep exists. On a handheld that is the difference
+# between closing the lid mid-download and coming back to a finished one, versus
+# coming back to a dropped connection and a Steam client reconnecting from
+# scratch. It is opt-in at RUNTIME -- the patch stats the flag file per event --
+# so this package deliberately does NOT create it:
+#
+#   sudo touch /etc/NetworkManager/ignore-sleep     # keep devices up on suspend
+#   sudo rm    /etc/NetworkManager/ignore-sleep     # back to stock behaviour
+#
+# armada's build is a Fedora SRPM rebuild (NetworkManager-1.56.1-2.fc44); this
+# is Arch's 1.58.1 packaging with the same patch on top. The patch touches one
+# function in src/core/nm-power-monitor.c and applies to both.
+#
+# Derived from Arch's packaging for 1.58.1-1:
+#   https://gitlab.archlinux.org/archlinux/packaging/packages/networkmanager
+# Kept close to it so a version bump is a diff. Deltas, all of them forced:
+#   arch=(aarch64)
+#   pkgrel=2          see the pkgrel note below
+#   prepare()         applies packages/networkmanager/patch-set/, fetched
+#   check()           dropped -- see below
+#   validpgpkeys      dropped -- see below
+#
+# Maintainer: Waltteri Hooli <1420194+wahooli@users.noreply.github.com>
+# Upstream Arch maintainer: Jan Alexander Steffens (heftig) <heftig@archlinux.org>
+
+# ── this package SHADOWS ALARM, and that has a cost ──────────────────────────
+# All four pkgnames below already exist in ALARM's [extra] at 1.58.1-1. This
+# build wins by pkgver being equal and pkgrel being higher, which also means:
+#
+#   * The moment ALARM ships 1.59.0, theirs is newer, pacman takes it, and the
+#     suspend patch silently leaves the device. upstream.env sets ABI_PIN_* so
+#     the poller reports that as drift -- that report is the only thing standing
+#     between a bump and a regression nobody notices.
+#   * Every ALARM NetworkManager security update now has to be followed HERE
+#     before devices can get it, because until this package is rebuilt it is
+#     what pacman prefers.
+#
+# libnm, nm-cloud-setup and networkmanager-docs are byte-for-byte what ALARM
+# already ships -- the patch only touches the daemon in src/core. They are built
+# and published anyway because they CANNOT be dropped: the file lists come out
+# of one `meson install`, so leaving libnm out would put /usr/lib/libnm.so.0
+# inside the networkmanager package, where it collides with ALARM's libnm and
+# pacman refuses the install outright.
+
+pkgbase=networkmanager
+pkgname=(
+  networkmanager
+  libnm
+  nm-cloud-setup
+  networkmanager-docs
+)
+pkgver=1.58.1
+# Arch and ALARM are both at 1.58.1-1. -2 is the whole mechanism by which this
+# build is preferred over theirs, so it must stay above whatever pkgrel ALARM
+# publishes for this pkgver -- if they ever rebuild 1.58.1 to -2, raise this.
+pkgrel=2
+pkgdesc="Network connection manager and user applications"
+url="https://networkmanager.dev/"
+arch=(aarch64)
+license=(LGPL-2.1-or-later)
+makedepends=(
+  audit
+  bash
+  bpf
+  clang
+  curl
+  dhcpcd
+  dnsmasq
+  git
+  glib2
+  glib2-devel
+  glibc
+  gobject-introspection
+  gtk-doc
+  iproute2
+  iptables
+  iwd
+  jansson
+  libbpf
+  libgcc
+  libmm-glib
+  libndp
+  libnewt
+  libnvme
+  libpsl
+  libteam
+  meson
+  modemmanager
+  nftables
+  nspr
+  nss
+  openresolv
+  pacrunner
+  perl-yaml
+  polkit
+  ppp
+  python-gobject
+  readline
+  slang
+  systemd
+  systemd-libs
+  vala
+  wpa_supplicant
+)
+# checkdepends dropped along with check(), below.
+source=(
+  "git+https://gitlab.freedesktop.org/NetworkManager/NetworkManager.git#tag=${pkgver/[a-z]/-&}"
+)
+# Arch's b2sum, verbatim -- same URL, same tag. makepkg 7 checksums a git
+# tag/commit source by hashing `git archive` of that ref (calc_checksum_git in
+# libmakepkg), so this is a real integrity check on the exact tree, not a SKIP.
+b2sums=('71ca8a6b298df777841b6f5560bf6ef9100ac7b6b4c48a46c995685a53cb09732d1e8c6e4139f572bbb3f66352eb59737f260ca5738202591b4f25703976f141')
+
+# ── validpgpkeys: dropped, not forgotten ─────────────────────────────────────
+# Arch lists thirteen NetworkManager release keys, and devtools imports them from
+# the keys/pgp/ directory in their packaging repo. This project cannot carry that
+# directory: .gitignore blocks *.asc so no signing material can be committed by
+# accident, and the builder container has no NM keys in its keyring either -- so
+# a validpgpkeys entry would only produce "unknown public key" on every build.
+#
+# Nothing is lost by dropping it: validpgpkeys governs detached .sig files, and
+# makepkg does not verify git TAG signatures at all (git.sh checks only that the
+# tag name has not been forged). The b2sum above is what pins the tree, and it is
+# the same value Arch computed from the same signed tag.
+
+# The armada patch set, fetched not vendored:
+#   scripts/fetch-patch-set.sh networkmanager
+# lands packages/networkmanager/patch-set/*.patch at the armada commit pinned in
+# upstream.env. Discovered rather than listed so a patch armada adds is picked up
+# by the refetch alone.
+_patches=()
+for _p in "${startdir}"/patch-set/*.patch; do
+  [ -e "${_p}" ] && _patches+=("$(basename "${_p}")")
+done
+unset _p
+
+prepare() {
+  cd NetworkManager
+
+  [ ${#_patches[@]} -gt 0 ] || {
+    echo "::  no patches in ${startdir}/patch-set -- run scripts/fetch-patch-set.sh ${pkgbase}"
+    echo "::  refusing to build: an unpatched build would shadow ALARM's package with"
+    echo "::  a rebuild of ALARM's package, and the only visible difference is a pkgrel."
+    return 1
+  }
+
+  local p f
+  for p in "${_patches[@]}"; do
+    f="${startdir}/patch-set/${p}"
+    [ -f "${f}" ] || { echo "::  missing patch: ${p} (run scripts/fetch-patch-set.sh ${pkgbase})"; return 1; }
+    # Dry-run first: GNU patch can exit 0 having consumed only the first hunk and
+    # dismissed the rest as trailing garbage. Here that would ship a daemon that
+    # skips the SLEEPING signal on suspend but never restores it on resume --
+    # devices left down until NM is restarted, from a build that reported success.
+    if ! patch -p1 --batch --forward -F0 --dry-run --quiet < "${f}"; then
+      echo "::  FAILED: ${p}"
+      echo "::  armada wrote these against NetworkManager ${pkgver}? Their BASE.env is a"
+      echo "::  Fedora SRPM on a different release line, so a pkgver bump here can outrun"
+      echo "::  them. Rebase the hunk against src/core/nm-power-monitor.c by hand."
+      return 1
+    fi
+    patch -p1 --batch --forward -F0 --quiet < "${f}"
+    echo "::  applied: ${p}"
+  done
+}
+
+build() {
+  local meson_options=(
+    # build checks this option; injecting just via *FLAGS is broken
+    -D b_lto=true
+
+    # platform
+    -D dist_version="$pkgver-$pkgrel"
+    -D session_tracking_consolekit=false
+    -D suspend_resume=systemd
+    -D polkit_noauth_group=wheel
+    -D selinux=false
+
+    # features
+    -D iwd=true
+    -D teamdctl=true
+    -D bpf-compiler=clang
+
+    # configuration plugins
+    -D config_plugins_default=keyfile
+    -D ifupdown=false
+
+    # handlers for resolv.conf
+    -D netconfig=no
+    -D config_dns_rc_manager_default=symlink
+
+    # miscellaneous
+    -D vapi=true
+    -D docs=true
+    -D more_asserts=no
+    -D more_logging=false
+    -D qt=false
+  )
+
+  arch-meson NetworkManager build "${meson_options[@]}"
+  meson compile -C build
+}
+
+# ── check(): dropped ─────────────────────────────────────────────────────────
+# Arch runs `NMTST_FORCE_REAL_ROOT=1 meson test`. Both halves of that are wrong
+# here. The builder container runs makepkg as an unprivileged `build` user, so
+# forcing the real-root path makes NM's tests take branches that need
+# capabilities they do not have; and the suite reaches for netlink, namespaces
+# and a live D-Bus that a --rm container does not provide. It fails on the
+# environment rather than on the code, and BUILDENV in the builder image has
+# `check` ENABLED -- so left in place it would fail every build.
+#
+# The patch is covered instead by the dry-run assertion in prepare(), which is
+# what actually distinguishes this package from ALARM's.
+
+_pick() {
+  local p="$1" f d; shift
+  for f; do
+    d="$srcdir/$p/${f#$pkgdir/}"
+    mkdir -p "$(dirname "$d")"
+    mv "$f" "$d"
+    rmdir -p --ignore-fail-on-non-empty "$(dirname "$f")"
+  done
+}
+
+package_networkmanager() {
+  depends=(
+    audit
+    bash
+    curl
+    glib2
+    glibc
+    iproute2
+    jansson
+    libbpf
+    libgcc
+    libmm-glib
+    libndp
+    libnewt
+    libnm
+    libpsl
+    libteam
+    mobile-broadband-provider-info
+    nspr
+    nss
+    readline
+    slang
+    systemd-libs
+    wpa_supplicant
+  )
+  optdepends=(
+    'bluez: Bluetooth support'
+    'dhcpcd: alternative DHCP client'
+    'dnsmasq: connection sharing'
+    'firewalld: firewall support'
+    'iptables: connection sharing'
+    'iwd: wpa_supplicant alternative'
+    'libnvme: NBFT support'
+    'modemmanager: cellular network support'
+    'nftables: connection sharing'
+    'openresolv: alternative resolv.conf manager'
+    'pacrunner: PAC proxy support'
+    'polkit: let non-root users control networking'
+    'ppp: dialup connection support'
+  )
+  backup=(etc/NetworkManager/NetworkManager.conf)
+
+  # NM wants to move to LGPL only, but there's still GPL code left
+  license+=(GPL-2.0-or-later)
+
+  meson install -C build --destdir "$pkgdir"
+
+  cd "$pkgdir"
+
+  # /etc/NetworkManager
+  install -d etc/NetworkManager/{conf,dnsmasq}.d
+  install -dm700 etc/NetworkManager/system-connections
+  install -m644 /dev/stdin etc/NetworkManager/NetworkManager.conf <<END
+# Configuration file for NetworkManager.
+# See "man 5 NetworkManager.conf" for details.
+END
+
+  # packaged configuration
+  install -Dm644 /dev/stdin usr/lib/NetworkManager/conf.d/20-connectivity.conf <<END
+[connectivity]
+uri=http://ping.archlinux.org/nm-check.txt
+END
+
+  shopt -s globstar
+
+  _pick docs usr/share/gtk-doc
+
+  _pick libnm usr/include/libnm
+  _pick libnm usr/lib/girepository-1.0/NM-*
+  _pick libnm usr/lib/libnm.*
+  _pick libnm usr/lib/nm-libnm-helper
+  _pick libnm usr/lib/pkgconfig/libnm.pc
+  _pick libnm usr/share/gir-1.0/NM-*
+  _pick libnm usr/share/vala/vapi/libnm.*
+
+  _pick cloud usr/lib/**/*nm-cloud-setup*
+  _pick cloud usr/share/man/*/nm-cloud-setup*
+
+  # Not actually packaged (https://bugs.archlinux.org/task/69138)
+  _pick ovs usr/lib/systemd/system/NetworkManager.service.d/NetworkManager-ovs.conf
+
+  # Restore empty dir
+  install -d usr/lib/NetworkManager/dispatcher.d/no-wait.d
+
+  # The reason this package exists. nm-power-monitor.c is compiled into the
+  # daemon, so there is no file to check for -- but the flag-file string the
+  # patch introduced is in the binary, and its absence means an unpatched
+  # NetworkManager is about to be published under a name that outranks ALARM's.
+  grep -qa '/etc/NetworkManager/ignore-sleep' usr/bin/NetworkManager \
+    || { echo "PKGBUILD: suspend patch missing from the built daemon" >&2; return 1; }
+}
+
+package_libnm() {
+  pkgdesc="NetworkManager client library"
+  depends=(
+    glib2
+    glibc
+    libgcc
+    nspr
+    nss
+    systemd-libs
+    util-linux-libs
+  )
+  provides=(libnm.so)
+
+  mv libnm/* "$pkgdir"
+}
+
+package_nm-cloud-setup() {
+  pkgdesc="Automatically configure NetworkManager in cloud"
+  depends=(
+    bash
+    curl
+    glib2
+    glibc
+    jansson
+    libgcc
+    libnm
+    networkmanager
+  )
+
+  mv cloud/* "$pkgdir"
+}
+
+package_networkmanager-docs() {
+  pkgdesc+=" (API documentation)"
+  depends=()
+
+  mv docs/* "$pkgdir"
+}
+
+# vim:set sw=2 sts=-1 et:

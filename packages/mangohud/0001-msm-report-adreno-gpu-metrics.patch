@@ -1,0 +1,129 @@
+--- a/src/gpu_fdinfo.cpp
++++ b/src/gpu_fdinfo.cpp
+@@ -21,6 +21,12 @@
+         return;
+     }
+ 
++    // fdinfo's "drm-driver" is the name the DRM core registers, while `module`
++    // is the sysfs driver directory name. For msm those differ: the platform
++    // driver is "msm_dpu" but every fdinfo says "msm". Everywhere else the two
++    // strings are identical, so this is a no-op for other drivers.
++    const std::string fdinfo_driver = module == "msm_dpu" ? "msm" : module;
++
+     // Here we store client-ids, if ids match, we dont open this file,
+     // because it will have same readings and it becomes a duplicate
+     std::set<std::string> client_ids;
+@@ -55,7 +61,7 @@
+                 client_id = val;
+         }
+ 
+-        if (!driver.empty() && driver == module) {
++        if (!driver.empty() && driver == fdinfo_driver) {
+             total++;
+             SPDLOG_TRACE(
+                 "driver = \"{}\", pdev = \"{}\", "
+@@ -67,7 +73,7 @@
+ 
+         if (
+             driver.empty() || client_id.empty() ||
+-            driver != module || pdev != pci_dev ||
++            driver != fdinfo_driver || pdev != pci_dev ||
+             client_ids.find(client_id) != client_ids.end()
+         )
+             continue;
+@@ -175,7 +181,12 @@
+ {
+     std::string hwmon;
+ 
+-    if (module == "msm")
++    // The sysfs driver name is "msm_dpu"; this used to test for "msm" and so
++    // never matched, silently falling through to the drm-node hwmon directory
++    // that msm does not have. The Adreno thermal zones are top-level hwmons
++    // named "gpu_thermal" (sdm845 and friends) or "gpuss_N_thermal" (X1E), so
++    // a "gpu" substring finds one on either.
++    if (module == "msm_dpu")
+         hwmon = find_hwmon_sensor_dir("gpu");
+     else if (module == "panfrost" || module == "panthor")
+         hwmon = find_hwmon_sensor_dir("gpu_thermal");
+@@ -551,9 +562,50 @@
+     if (clock_str.empty())
+         return 0;
+ 
++    // devfreq reports Hz; the i915/xe/kgsl files are already in MHz.
++    if (module == "msm_dpu")
++        return std::stoull(clock_str) / 1'000'000;
++
+     return std::stoi(clock_str);
+ }
+ 
++void GPU_fdinfo::find_msm_devfreq()
++{
++    const std::string devfreq_root = "/sys/class/devfreq";
++
++    if (!fs::exists(devfreq_root)) {
++        SPDLOG_DEBUG("msm: \"{}\" does not exist", devfreq_root);
++        return;
++    }
++
++    // Adreno's devfreq node is named for the GPU's platform address, e.g.
++    // "3d00000.gpu" on X1E. There is no busy-percent file here, only the
++    // frequency -- load still comes from fdinfo.
++    for (const auto& entry : fs::directory_iterator(devfreq_root)) {
++        auto name = entry.path().filename().string();
++
++        if (name.size() < 4 || name.compare(name.size() - 4, 4, ".gpu") != 0)
++            continue;
++
++        auto cur_freq = entry.path().string() + "/cur_freq";
++
++        if (!fs::exists(cur_freq))
++            continue;
++
++        gpu_clock_stream.open(cur_freq);
++
++        if (!gpu_clock_stream.good()) {
++            SPDLOG_DEBUG("msm: failed to open \"{}\"", cur_freq);
++            return;
++        }
++
++        SPDLOG_DEBUG("msm: gpu clock found at \"{}\"", cur_freq);
++        return;
++    }
++
++    SPDLOG_DEBUG("msm: no gpu devfreq node found under \"{}\"", devfreq_root);
++}
++
+ int GPU_fdinfo::get_gpu_clock_mali() {
+     if (fdinfo_data.empty())
+         return 0;
+--- a/src/gpu_fdinfo.h
++++ b/src/gpu_fdinfo.h
+@@ -94,6 +94,7 @@
+     std::ifstream gpu_clock_stream;
+     void find_i915_gt_dir();
+     void find_xe_gt_dir();
++    void find_msm_devfreq();
+     int get_gpu_clock();
+ 
+     uint64_t get_gpu_time_panfrost();
+@@ -144,8 +145,10 @@
+             drm_engine_type = "drm-engine-gfx";
+             drm_memory_type = "drm-memory-vram";
+         } else if (module == "msm_dpu") {
+-            // msm driver does not report vram usage
+             drm_engine_type = "drm-engine-gpu";
++            // msm has no dedicated vram, but it does report the process's
++            // resident GTT allocation, which is what proc_vram wants.
++            drm_memory_type = "drm-resident-memory";
+         } else if (module == "msm_drm") {
+             init_kgsl();
+         } else if (module == "panfrost") {
+@@ -212,6 +215,8 @@
+             find_i915_gt_dir();
+         else if (module == "xe")
+             find_xe_gt_dir();
++        else if (module == "msm_dpu")
++            find_msm_devfreq();
+ 
+         thread = std::thread(&GPU_fdinfo::main_thread, this);
+         // "mangohud-gpufdinfo" wouldn't fit in the 15 byte limit

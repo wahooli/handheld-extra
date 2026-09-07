@@ -32,10 +32,6 @@ rclone.conf
 *.local.*
 
 # ─── build output ───────────────────────────────────────────────────────────
-# scripts/build-in-container.sh sets BUILDDIR and SRCDEST so makepkg never writes
-# inside packages/, which is why there are no packages/*/src/ or packages/*/pkg/
-# rules here. Those rules would also be actively wrong: decky-plugin-handheld-
-# control is first-party and its src/ is TypeScript that has to be committed.
 out/
 .build/
 .cache/
@@ -44,6 +40,38 @@ out/
 *.pkg.tar.zst.sig
 *.pkg.tar.xz
 *.pkg.tar.xz.sig
+
+# ─── makepkg run by hand ────────────────────────────────────────────────────
+# scripts/build-in-container.sh sets BUILDDIR and SRCDEST so makepkg never writes
+# inside packages/, and that used to be the argument for having no
+# packages/*/src/ or packages/*/pkg/ rules here at all.
+#
+# The argument only covers the container path. Running `makepkg` directly in a
+# package directory is the obvious thing to do when debugging ONE package, and
+# it gets makepkg's defaults instead: src/ (an extracted upstream tree), pkg/ (a
+# staged $pkgdir, root-owned files and all) and the downloaded source tarball
+# all land in packages/<pkg>/. That is how packages/mangohud/ ended up with all
+# three untracked, one `git add -A` away from being committed.
+#
+# src/ needs the exception below, because the reason those rules were called
+# "actively wrong" is real: decky-plugin-handheld-control is first-party and its
+# src/ is TypeScript that HAS to be committed. Ignoring a directory and then
+# negating that same directory does work -- what git cannot do is re-include a
+# file whose parent directory stayed excluded, and the negation here is on the
+# directory itself. (index.tsx is already tracked, so it would survive either
+# way; the negation is what keeps a NEWLY added .tsx from being invisible to
+# `git add`.)
+packages/*/pkg/
+packages/*/src/
+!packages/decky-plugin-handheld-control/src/
+
+# Sources makepkg downloaded, same in-place case as above. No package here
+# vendors its own tarball -- every one of them fetches, so anything matching
+# this is build input, not content.
+packages/*/*.tar.gz
+packages/*/*.tar.xz
+packages/*/*.tar.bz2
+packages/*/*.tar.zst
 
 # ─── in-place JS build output ───────────────────────────────────────────────
 # decky-plugin-handheld-control is first-party, so its PKGBUILD has an empty

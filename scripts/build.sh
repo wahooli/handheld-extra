@@ -78,6 +78,31 @@ for p in "${TARGETS[@]}"; do
 done
 echo "==> building: ${TARGETS[*]}"
 
+# ── external patch sets ──────────────────────────────────────────────────────
+# A package that carries one declares PATCHES_REPO in its upstream.env, and the
+# patches are deliberately NOT committed (see the header of fetch-patch-set.sh)
+# -- so a fresh checkout, which is what every CI run is, has no patch-set/ at
+# all. Nothing used to fetch it from anywhere in the build path.
+#
+# That did not fail. Every one of those PKGBUILDs builds its patch list by
+# globbing patch-set/ at parse time, so an absent directory produced an EMPTY
+# list, prepare() looped over nothing, and the build succeeded -- publishing a
+# stock upstream package under the patched package's name. gamescope's CI build
+# of 2026-09-06 says `applied 0 armada patches` in its own log and went to R2
+# with none of armada's 13 handheld patches in it.
+#
+# Refetched on every build rather than only when patch-set/ is absent: the ref
+# pinned in upstream.env is the authority on which patches belong to this build,
+# a directory left over from an earlier CURRENT is not. Nothing is lost by it --
+# these builds already need the network for their sources and makedepends.
+for p in "${TARGETS[@]}"; do
+    # Tested with grep rather than by sourcing: upstream.env sets a dozen
+    # variables and sourcing ten of them into this shell would leak one
+    # package's PATCHES_PATH into the next package's fetch.
+    grep -q '^PATCHES_REPO=' "packages/${p}/upstream.env" 2>/dev/null || continue
+    ./scripts/fetch-patch-set.sh "${p}"
+done
+
 if ! "${DOCKER}" image inspect "${IMAGE}" >/dev/null 2>&1; then
     echo "==> building ${IMAGE}"
     "${DOCKER}" build -t "${IMAGE}" .

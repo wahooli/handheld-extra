@@ -123,6 +123,17 @@ class Plugin:
         rc, _, err = await _run("fan", name)
         return {"ok": rc == 0, "error": err.strip()}
 
+    async def set_cpu(self, value: str) -> dict:
+        """`auto`, `manual`, or a clock in MHz as a string.
+
+        A clock alone is enough: the CLI switches the level to manual before
+        writing it, because the daemon deliberately does not infer that. So the
+        slider can send one number and the toggle one word, and neither has to
+        know the ordering rule.
+        """
+        rc, _, err = await _run("cpu", value)
+        return {"ok": rc == 0, "error": err.strip()}
+
     async def set_gpu(self, value: str) -> dict:
         """`auto`, `manual`, or a clock in MHz as a string."""
         rc, _, err = await _run("gpu", value)

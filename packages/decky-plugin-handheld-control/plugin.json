@@ -9,7 +9,7 @@
       "power",
       "root"
     ],
-    "description": "Fan curve and power profile control for ARM handhelds, backed by org.handheld.Power1.",
+    "description": "Fan curve, CPU clock pin and power profile control for ARM handhelds, backed by org.handheld.Power1.",
     "image": "https://opengraph.githubassets.com/1/SteamDeckHomebrew/PluginLoader"
   }
 }

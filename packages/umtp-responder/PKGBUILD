@@ -9,7 +9,7 @@
 
 pkgname=umtp-responder
 pkgver=1.9.1
-pkgrel=1
+pkgrel=2
 # armada's BASE.env COMMIT. Upstream tags exist but armada builds a specific
 # commit, and their patches are written against it -- following the tag instead
 # would be quietly building something they have not tested.
@@ -33,6 +33,17 @@ unset _p
 
 prepare() {
   cd "${_upstream}-${_commit}"
+
+  # An empty patch set is not a build of this package, it is a build of stock
+  # upstream wearing its name -- and until scripts/build.sh learned to fetch
+  # patch-set/, that is exactly what CI published. The loop below cannot catch
+  # it: it iterates _patches, so with nothing in it there is nothing to notice.
+  [ ${#_patches[@]} -gt 0 ] || {
+    echo "::  no patches in ${startdir}/patch-set -- run scripts/fetch-patch-set.sh umtp-responder"
+    echo "::  refusing to build: without armada's five patches this is stock"
+    echo "::  uMTP-Responder at an armada-pinned commit, which they do not ship."
+    return 1
+  }
   local p f
   for p in "${_patches[@]}"; do
     f="${startdir}/patch-set/${p}"

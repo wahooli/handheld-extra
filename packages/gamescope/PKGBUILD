@@ -40,7 +40,7 @@ pkgname=gamescope
 # version to their artifact rather than inventing one means `pacman -Q gamescope`
 # names exactly which armada build this is.
 pkgver=20260905.b80c7ac0
-pkgrel=1
+pkgrel=2
 pkgdesc='SteamOS session compositing window manager (OGC fork + armada handheld patches)'
 arch=(aarch64)
 url='https://github.com/OpenGamingCollective/gamescope'
@@ -127,6 +127,17 @@ unset _p
 
 prepare() {
   cd gamescope
+
+  # An empty patch set is not a build of this package, it is a build of stock
+  # upstream wearing its name -- and until scripts/build.sh learned to fetch
+  # patch-set/, that is exactly what CI published. The loop below cannot catch
+  # it: it iterates _patches, so with nothing in it there is nothing to notice.
+  [ ${#_patches[@]} -gt 0 ] || {
+    echo "::  no patches in ${startdir}/patch-set -- run scripts/fetch-patch-set.sh gamescope"
+    echo "::  refusing to build: without armada's patches this is plain gamescope,"
+    echo "::  with no EDID synthesis, no gamma22 HDR and no arm64 night mode."
+    return 1
+  }
 
   local p f fuzz applied=0 fuzzed=0
   for p in "${_patches[@]}"; do
