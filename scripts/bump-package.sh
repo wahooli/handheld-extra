@@ -46,6 +46,8 @@ IMAGE="${IMAGE:-linux-handheld-builder:latest}"
 # look unused here because upstream_latest() in lib-upstream.sh reads them.
 TRACK=; GITHUB_REPO=; GIT_URL=; OCI_IMAGE=; OCI_TAG_RE=; AUR_PKG=; CURRENT=; INCLUDE_PRERELEASE=
 PATCHES_REPO=; PATCHES_PATH=; PATCHES_REF='s/^[0-9]+-//'; VERSION_FILE=
+SOURCE_REF_FROM=; SOURCE_REF_VAR=; SOURCE_COMMIT_VAR=; SOURCE_GIT=
+TERRA_ENV_FILE=; TERRA_ENV_KEY=; TERRA_SPEC_REPO=; TERRA_SPEC_PATH=; TERRA_SPEC_KEYS=
 AUTOBUMP=yes; VERSION_VAR=pkgver; VERSION_FROM=upstream-tag; VERSION_SED='s/^v//'
 # shellcheck source=/dev/null
 source "${D}/upstream.env"
@@ -113,6 +115,36 @@ sed -i -E "s|^CURRENT=.*|CURRENT=${latest}|" "${D}/upstream.env"
 if [ -n "${PATCHES_REPO}" ]; then
     ./scripts/fetch-patch-set.sh "${PKG}" >/dev/null
     echo "    refetched $(ls "${D}/patch-set"/*.patch 2>/dev/null | wc -l) patches"
+fi
+
+# The SOURCE the patches apply to, resolved from the SAME artifact, immediately
+# after them. Together-or-not-at-all is the point: these two moving apart is
+# what made every gamescope build fail for a week, so there is deliberately no
+# path that writes one without the other.
+if [ -n "${SOURCE_REF_FROM}" ]; then
+    case "${SOURCE_REF_FROM}" in
+        armada-terra-spec)
+            _sref="$(armada_terra_source_ref "${PATCHES_REPO}" \
+                "$(printf '%s' "${latest}" | sed -E "${PATCHES_REF}")" \
+                "${TERRA_ENV_FILE}" "${TERRA_ENV_KEY}" \
+                "${TERRA_SPEC_REPO}" "${TERRA_SPEC_PATH}" "${TERRA_SPEC_KEYS}")" || _sref=
+            [ -n "${_sref}" ] || {
+                echo "!! ${PKG}: could not resolve the source ref from ${PATCHES_REPO} at ${latest}" >&2
+                echo "   refusing to continue -- an empty ref does not fail the build, it silently" >&2
+                echo "   builds the default branch, which is the bug this resolution exists to fix." >&2
+                exit 1; }
+            _scommit="$(git_ref_commit "${SOURCE_GIT}" "${_sref}")" || _scommit=
+            [ -n "${_scommit}" ] || { echo "!! ${PKG}: ${SOURCE_GIT} has no ref ${_sref}" >&2; exit 1; } ;;
+        *) echo "!! ${PKG}: unknown SOURCE_REF_FROM=${SOURCE_REF_FROM}" >&2; exit 1 ;;
+    esac
+    _oldsref="$(pkgbuild_var "${D}/PKGBUILD" "${SOURCE_REF_VAR}")"
+    sed -i -E "s|^${SOURCE_REF_VAR}=.*|${SOURCE_REF_VAR}=${_sref}|" "${D}/PKGBUILD"
+    sed -i -E "s|^${SOURCE_COMMIT_VAR}=.*|${SOURCE_COMMIT_VAR}=${_scommit}|" "${D}/PKGBUILD"
+    if [ "${_oldsref}" = "${_sref}" ]; then
+        echo "    ${SOURCE_REF_VAR}: ${_sref} (unchanged)"
+    else
+        echo "    ${SOURCE_REF_VAR}: ${_oldsref} -> ${_sref}  (${_scommit:0:12})"
+    fi
 fi
 
 # ── checksums ────────────────────────────────────────────────────────────────

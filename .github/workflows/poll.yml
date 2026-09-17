@@ -13,6 +13,13 @@ name: poll upstreams
 # composed with a pinned Hyprland version, and taking a new release without
 # checking which Hyprland the image ships builds a plugin for the wrong ABI.
 #
+# That declaration covers a second axis too: an ABI PIN, the exact version of
+# ANOTHER package a build is compiled against. hyprgrass pins hyprland, and ALARM
+# moving hyprland strands every device -- `pacman -Syu` refuses the whole
+# transaction, so nothing on the system upgrades. That axis is auto-bumped and
+# built, on ALARM's schedule rather than upstream's, which is why this poll is
+# the thing standing between a hyprland release and a stuck device.
+#
 # An issue is still raised here for a bump that FAILS -- a checksum that will not
 # refresh, a PKGBUILD that stops parsing -- because no build will happen to
 # report it.
@@ -67,6 +74,7 @@ jobs:
       # pkgver-pkgrel republishes a filename that is already live and served
       # immutable, which is how a device gets old bytes against a new signature.
       - name: Commit the bumps
+        id: commit
         if: ${{ steps.poll.outputs.bumped != '0' || steps.poll.outputs.tracked != '0' }}
         env:
           GH_TOKEN: ${{ github.token }}
@@ -121,22 +129,70 @@ jobs:
                } }
              }' \
             | gh api graphql --input - \
-                --jq '.data.createCommitOnBranch.commit | "==> committed \(.oid[0:8])  \(.url)"'
+                --jq '.data.createCommitOnBranch.commit.oid' > new-oid.txt
+          echo "==> committed $(cut -c1-8 new-oid.txt)"
+          echo "oid=$(cat new-oid.txt)" >> "$GITHUB_OUTPUT"
+
+      # workflow_dispatch resolves `ref` server-side, and that read can lag the
+      # commit that was just made through the API. It did: a gamescope bump was
+      # committed at 12:58:39 and the dispatch two seconds later resolved `main`
+      # to the commit BEFORE it, so CI built the previous pin, failed, and the
+      # bump was never tested. The next poll then saw CURRENT already up to date
+      # and dispatched nothing, so the package sat unbuilt for days.
+      #
+      # `ref` cannot be a sha -- the API takes a branch or tag name only -- so
+      # the fix is to wait for the name to resolve to the sha we just wrote.
+      - name: Wait for the branch to resolve to the new commit
+        if: ${{ steps.commit.outputs.oid != '' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          WANT: ${{ steps.commit.outputs.oid }}
+          BRANCH: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          for _ in $(seq 30); do
+            have="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${BRANCH}" --jq .sha 2>/dev/null || true)"
+            [ "${have}" = "${WANT}" ] && { echo "==> ${BRANCH} is at ${WANT:0:8}"; exit 0; }
+            sleep 2
+          done
+          # Not a failure: the dispatch below still runs, and the self-heal step
+          # rebuilds anything that ends up unpublished. Saying so beats a red run.
+          echo "::warning::${BRANCH} did not resolve to ${WANT:0:8} in 60s; the build may run against an older commit"
 
       # A push made with GITHUB_TOKEN does not trigger other workflows, so the
       # build has to be dispatched explicitly. Documented GitHub behaviour, not
       # something a path filter can work around.
-      # Pass the bumped names. Without them `packages` falls back to its default
-      # of `all`, so a single bump rebuilt and republished all nine packages --
-      # nine pointless builds and a database rewritten for eight unchanged
-      # entries.
-      - name: Build what was bumped
-        if: steps.poll.outputs.bumped != '0'
+      #
+      # The list is bumped-this-run UNION not-currently-published. The union is
+      # the point: a bump whose build failed, raced, or never ran is invisible to
+      # every other check here -- the poller's question is "is CURRENT behind
+      # upstream", and after a bump the answer is no even though nothing was
+      # ever built. Comparing against what the repo actually SERVES asks the only
+      # question that survives an unknown failure mode, so a package heals on the
+      # next poll whatever went wrong.
+      #
+      # Passing names matters. Without them `packages` defaults to `all`, and a
+      # single bump rebuilds and republishes every package -- pointless builds
+      # and a database rewritten for unchanged entries.
+      - name: Build what was bumped or is missing
+        if: ${{ !cancelled() }}
         env:
           GH_TOKEN: ${{ github.token }}
+          BUMPED: ${{ steps.poll.outputs.bumped_list }}
+          BRANCH: ${{ github.ref_name }}
         run: |
-          gh workflow run build.yml --ref "${{ github.ref_name }}" \
-            -f packages="${{ steps.poll.outputs.bumped_list }}"
+          set -euo pipefail
+          # Fails closed: an unreachable repo exits non-zero and dispatches
+          # nothing, rather than reading as "nothing is published" and rebuilding
+          # everything.
+          missing="$(./scripts/find-unpublished.sh || true)"
+          targets="$(printf '%s %s' "${BUMPED}" "$(echo ${missing})" | tr ' ' '\n' | grep -v '^$' | sort -u | tr '\n' ' ' | sed 's/ $//')"
+          if [ -z "${targets}" ]; then
+            echo "==> everything published matches this tree; nothing to build"
+            exit 0
+          fi
+          echo "==> dispatching build for: ${targets}"
+          gh workflow run build.yml --ref "${BRANCH}" -f packages="${targets}"
 
       - name: Summary
         if: ${{ !cancelled() }}

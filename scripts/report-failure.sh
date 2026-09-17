@@ -2,6 +2,13 @@
 #
 # Open (or comment on) the build-failure issue. Deduped by title.
 # Needs GH_TOKEN; RUN_URL is a link back to the logs.
+#
+# The title deliberately carries NO run number. It used to, which made every run
+# a distinct title and so a brand new issue. That was survivable only because a
+# failed build was never retried -- and now it is: the poller rebuilds anything
+# the repo is not serving, so a package that keeps failing would have opened one
+# issue per day forever. One issue per ongoing failure, with a comment per run,
+# is the status board that behaviour needs.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -11,9 +18,9 @@ source ./repo.env
 
 command -v gh >/dev/null || { echo "!! gh not available" >&2; exit 0; }
 
-title="build failed: ${REPO_NAME} run ${RUN_NUMBER:-?}"
+title="build failed: ${REPO_NAME}"
 body="$(cat <<BODY
-${RUN_URL:-(no run url)}
+Run ${RUN_NUMBER:-?}: ${RUN_URL:-(no run url)}
 
 The database was only touched if the failure happened during publish; otherwise
 devices keep whatever \`[${REPO_NAME}]\` currently serves.
@@ -27,8 +34,10 @@ Common causes here, in rough order of likelihood:
 - **An upstream moved and the PKGBUILD did not.** These packages track other
   people's releases; a changed tarball checksum or a renamed source is the usual
   reason a package that built last week stops building.
-- **A patch stopped applying.** \`gamescope-virtio\` and \`wvkbd\` carry patches;
-  those are the two that can break on an upstream bump without any change here.
+- **A patch stopped applying.** \`gamescope\` and \`wvkbd\` carry patches. For
+  gamescope the source ref and the patch set are resolved from ONE armada
+  artifact, so they cannot drift apart; a failure there usually means armada
+  added a patch targeting a path this build does not present the same way.
 - **A new makedepend.** \`makepkg --syncdeps\` installs them, so this shows up as
   a missing-package error rather than a compile error.
 BODY

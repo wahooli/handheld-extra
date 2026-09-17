@@ -25,10 +25,10 @@
 # rather have hyprpm's on-device rebuild, the cost is base-devel in the image.
 #
 # ── why `main` and not a release tag ──────────────────────────────────────────
-# The newest RELEASE is v0.8.2, from 2024-10-09. Hyprland is at 0.56.1. A plugin
+# The newest RELEASE is v0.8.2, from 2024-10-09. Hyprland is at 0.56.2. A plugin
 # is ABI-locked to the compositor it was compiled against, so a 2024 tag has no
 # chance of loading — the AUR package tracks `main` for exactly this reason, and
-# so does this. main was last touched 2026-08-13, so it does track current
+# so does this. main was last touched 2026-08-11, so it does track current
 # Hyprland.
 #
 # ── what this does NOT copy from the AUR package ──────────────────────────────
@@ -45,21 +45,27 @@ pkgname=hyprgrass
 # then tells you what it was compiled against, which is the only thing that
 # determines whether it can load.
 _srcver=0.8.2
-_hyprver=0.56.1
+_hyprver=0.56.2
 pkgver="${_srcver}+hypr${_hyprver}"
-# -2 is a rename, not a change: -1's object in R2 was overwritten by a rebuild of
-# the same commit, and it is served immutable, so the CDN edge still hands some
-# devices the previous bytes -- which then fail signature verification. Only a new
-# filename escapes that cache. publish-r2.sh now refuses the overwrite outright.
-pkgrel=2
-# 2026-08-13. Bump together with _hyprver whenever hyprland moves.
+# Back to 1 because pkgver moved: 0.8.2+hypr0.56.2 is a filename R2 has never
+# served. pkgrel only has to supply a new name when pkgver does not -- the -2
+# above was exactly that case, a rebuild of an identical pkgver whose R2 object
+# was overwritten and then served immutable, handing some devices the previous
+# bytes against a new signature. publish-r2.sh refuses that overwrite now.
+pkgrel=1
+# 2026-08-11, the hyprgrass commit upstream pairs with hyprland v0.56.2
+# (efb50993) in hyprpm.toml commit_pins. Moves with _hyprver -- and now moves
+# automatically: see ABI_PIN_AUTOBUMP in upstream.env.
 #
-# If a bump does not build, upstream keeps its own compatibility matrix in
-# hyprpm.toml at the repo root: a `commit_pins` table mapping Hyprland commit ->
-# hyprgrass commit. That is the authoritative source for "which hyprgrass goes
-# with which Hyprland", and is what the AUR package parses at build time. Look up
-# the commit Arch built hyprland ${_hyprver} from and take the paired entry.
-_commit=56473e9e0b2da34bb3b871e90f40b3fc3d41ba9b
+# The pairing comes from upstream's own compatibility matrix: hyprpm.toml at the
+# repo root carries a `commit_pins` table mapping Hyprland commit -> hyprgrass
+# commit. It is the authoritative source for "which hyprgrass goes with which
+# Hyprland", and is what hyprpm and the AUR package read at build time.
+#
+# By hand -- when upstream has not added the row yet, or a bump does not build --
+# look up the commit Arch built hyprland ${_hyprver} from and take the paired
+# entry. That is the same row scripts/bump-abi-pin.sh reads.
+_commit=8e605468cbf429791d61ddbfaeb14ff5e08fec3e
 pkgdesc="Touchscreen gesture plugin for Hyprland (built against ${_hyprver})"
 arch=('aarch64')
 url='https://github.com/horriblename/hyprgrass'

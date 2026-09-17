@@ -191,3 +191,117 @@ aur_pkg_version() {
 pkgbuild_var() {
     grep -oE "^$2=.*" "$1" 2>/dev/null | head -1 | cut -d= -f2- | tr -d "\"'"
 }
+
+# The commit a tag points at in a remote git repo, without cloning it.
+#
+#   git_tag_commit https://github.com/hyprwm/Hyprland.git v0.56.2
+#     ->  efb50993780079460b0cbed1363e2166a2de1d9f
+#
+# Both ref forms are asked for and the dereferenced one wins. An ANNOTATED tag
+# lists two lines -- `refs/tags/v1` is the sha of the tag OBJECT and only
+# `refs/tags/v1^{}` is the commit -- while a LIGHTWEIGHT tag has no ^{} line at
+# all. Hyprland's release tags are lightweight today, so reading either form
+# alone works right now and resolves to a non-commit the first time upstream
+# tags with -a. That failure would not look like a failure: the sha is
+# well-formed, it simply matches nothing in the pin table below.
+git_tag_commit() {
+    local url="$1" tag="$2" out
+    out="$(git ls-remote "${url}" "refs/tags/${tag}" "refs/tags/${tag}^{}" 2>/dev/null)" || return 1
+    [ -n "${out}" ] || return 1
+    printf '%s\n' "${out}" \
+        | awk '/\^\{\}$/ { print $1; found = 1; exit } { plain = $1 } END { if (!found && plain) print plain }'
+}
+
+# The plugin commit upstream pairs with a given Hyprland commit.
+#
+#   hyprpm_paired_commit horriblename/hyprgrass efb5099378...  ->  8e605468cb...
+#
+# Hyprland plugins keep a compatibility table at their repo root: hyprpm.toml
+# carries `commit_pins`, a list of [Hyprland commit, plugin commit] pairs. It is
+# what hyprpm reads to rebuild a plugin after a compositor bump, and what the AUR
+# package parses at build time -- so it is the authoritative answer to "which
+# plugin commit targets this compositor", not a heuristic.
+#
+# Matched on the FULL Hyprland commit and nothing else. There is deliberately no
+# nearest-entry fallback: consecutive rows exist precisely BECAUSE an ABI changed
+# between them, so the neighbouring row is the one guaranteed not to work. No
+# match means upstream has not pinned this compositor yet, and the caller must
+# report that rather than pick something close.
+#
+# The table is read from the default branch, which is also where the packaged
+# _commit lives -- a pin for a Hyprland release cannot exist on a branch older
+# than that release.
+#
+# Fails closed: unreadable table, malformed argument, or no pairing all return
+# empty, and every caller treats empty as "do not bump".
+hyprpm_paired_commit() {
+    local repo="$1" hlcommit="$2"
+    case "${hlcommit}" in
+        [0-9a-f][0-9a-f]*) [ "${#hlcommit}" -eq 40 ] || return 1 ;;
+        *) return 1 ;;
+    esac
+    curl -fsSL --retry 2 --max-time 30 \
+        "https://raw.githubusercontent.com/${repo}/HEAD/hyprpm.toml" 2>/dev/null \
+        | sed -n '/commit_pins/,/^]/p' \
+        | grep -oE "\"${hlcommit}\"[[:space:]]*,[[:space:]]*\"[0-9a-f]{40}\"" \
+        | tail -1 \
+        | grep -oE '[0-9a-f]{40}' | tail -1
+}
+
+# Resolve a git ref -- a tag or an already-resolved commit -- to a commit sha.
+#
+# Anything 40 hex characters long is taken as a commit and returned as-is; every
+# other form goes to the remote as a tag. That split exists because the upstream
+# this serves has used BOTH spellings over time.
+git_ref_commit() {
+    local url="$1" ref="$2"
+    case "${ref}" in
+        [0-9a-f]*) [ "${#ref}" -eq 40 ] && { printf '%s' "${ref}"; return 0; } ;;
+    esac
+    git_tag_commit "${url}" "${ref}"
+}
+
+# The SOURCE ref an armada artifact was actually built from.
+#
+#   armada_terra_source_ref armada-os/armada-packages 24d88394 TERRA.env \
+#       TERRA_COMMIT terrapkg/packages \
+#       anda/games/terra-gamescope/terra-gamescope.spec 'ver gamescope_commit'
+#     ->  3.16.28-ogc1
+#
+# armada does not package from a source tree of their own: they clone terrapkg
+# at a pinned TERRA_COMMIT and inject their patches into Terra's spec, and it is
+# THAT spec which names the upstream ref. So the ref armada's patches are written
+# against is two hops from the published artifact, and this walks them:
+#
+#   artifact tag -> armada commit -> TERRA.env TERRA_COMMIT -> terra spec -> ref
+#
+# Everything comes off the one artifact tag, so the source and the patch set can
+# never be resolved from different moments -- which is the entire failure this
+# exists to prevent. gamescope built `#branch=ogc` for a while, a MOVING branch,
+# while the patches were pinned to an artifact; when the fork got far enough
+# ahead, 9 of 17 patches stopped applying and every build failed. The patch set
+# was never stale -- against the ref Terra pinned, that same set applies with
+# zero fuzz.
+#
+# Two spellings, because Terra has used both: `%global ver <tag>` today and
+# `%global gamescope_commit <sha>` before it. They are tried in the order the
+# caller lists them.
+#
+# Fails closed, and that matters more here than usual: an empty ref written into
+# a PKGBUILD does not fail the build, it silently clones the default branch --
+# reintroducing exactly the bug this removes.
+armada_terra_source_ref() {
+    local repo="$1" ref="$2" envfile="$3" envkey="$4" specrepo="$5" specpath="$6" keys="$7"
+    local terra spec key val
+    terra="$(repo_file_value "${repo}" "${ref}" "${envfile}" "${envkey}")"
+    [ -n "${terra}" ] || return 1
+    spec="$(curl -fsSL --retry 2 --max-time 30 \
+        "https://raw.githubusercontent.com/${specrepo}/${terra}/${specpath}" 2>/dev/null)" || return 1
+    [ -n "${spec}" ] || return 1
+    for key in ${keys}; do
+        val="$(printf '%s\n' "${spec}" \
+            | grep -oE "^%global[[:space:]]+${key}[[:space:]]+[^[:space:]]+" | head -1 | awk '{print $3}')"
+        [ -n "${val}" ] && { printf '%s' "${val}"; return 0; }
+    done
+    return 1
+}

@@ -17,7 +17,7 @@ which does the same for the kernel. Devices add both:
 |---|---|
 | `gamescope` | the OpenGamingCollective fork, plus armada's 13 handheld patches |
 | `mangohud` | upstream releases |
-| `hyprgrass` | upstream, pinned against a Hyprland version |
+| `hyprgrass` | upstream, pinned against a Hyprland version — the source moves automatically, but in lockstep with hyprland rather than on hyprgrass's own release cadence |
 | `wvkbd` | upstream, plus a Finnish layout patch |
 | `inputplumber` | armada's pin of ShadowBlip/InputPlumber, plus 3 patches |
 | `umtp-responder` | armada's pin of viveris/uMTP-Responder, plus 5 patches |
