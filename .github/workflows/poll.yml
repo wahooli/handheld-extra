@@ -186,7 +186,10 @@ jobs:
           # nothing, rather than reading as "nothing is published" and rebuilding
           # everything.
           missing="$(./scripts/find-unpublished.sh || true)"
-          targets="$(printf '%s %s' "${BUMPED}" "$(echo ${missing})" | tr ' ' '\n' | grep -v '^$' | sort -u | tr '\n' ' ' | sed 's/ $//')"
+          # grep exits 1 when the list is empty, which is the ordinary quiet
+          # day, not an error -- without the `|| true` pipefail would take the
+          # step down and the "nothing to build" branch below could never run.
+          targets="$(printf '%s %s' "${BUMPED}" "$(echo ${missing})" | tr ' ' '\n' | grep -v '^$' | sort -u | tr '\n' ' ' | sed 's/ $//' || true)"
           if [ -z "${targets}" ]; then
             echo "==> everything published matches this tree; nothing to build"
             exit 0
