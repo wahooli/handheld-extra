@@ -1,39 +1,13 @@
 name: poll upstreams
 
-# Checks every package against its declared upstream and reports what is behind.
-#
-# When something is behind, it bumps it, commits, and dispatches a build. The
-# build workflow already opens an issue if that build fails, so failure has one
-# home rather than two.
-#
-# What made this safe was giving each package a declaration of how its version is
-# derived -- upstream tag through a sed, armada's BASE.env, the date and sha of
-# the armada commit itself -- instead of assuming one rule fits all. A package that cannot be
-# bumped mechanically says so: hyprgrass sets AUTOBUMP=no because its pkgver is
-# composed with a pinned Hyprland version, and taking a new release without
-# checking which Hyprland the image ships builds a plugin for the wrong ABI.
-#
-# That declaration covers a second axis too: an ABI PIN, the exact version of
-# ANOTHER package a build is compiled against. hyprgrass pins hyprland, and ALARM
-# moving hyprland strands every device -- `pacman -Syu` refuses the whole
-# transaction, so nothing on the system upgrades. That axis is auto-bumped and
-# built, on ALARM's schedule rather than upstream's, which is why this poll is
-# the thing standing between a hyprland release and a stuck device.
-#
-# An issue is still raised here for a bump that FAILS -- a checksum that will not
-# refresh, a PKGBUILD that stops parsing -- because no build will happen to
-# report it.
 on:
   schedule:
-    # Daily rather than the kernel's 6-hourly. These upstreams release on the
-    # order of weeks, and nothing here auto-builds, so a faster poll would only
-    # rewrite the same issue more often.
     - cron: '23 6 * * *'
   workflow_dispatch:
 
 permissions:
-  contents: write    # to commit the bumps
-  actions: write     # to dispatch build.yml
+  contents: write
+  actions: write
   issues: write
 
 concurrency:
@@ -52,34 +26,11 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: ./scripts/poll-upstreams.sh --bump
 
-      # Committed through the GraphQL API rather than `git commit && git push`,
-      # because GitHub signs commits made with a bot token server-side. The bump
-      # lands Verified and satisfies a "require signed commits" branch rule; a
-      # plain push from the runner is unsigned and would be rejected. There is no
-      # key to manage -- GITHUB_TOKEN being a bot token is the whole mechanism.
-      #
-      # expectedHeadOid makes this a compare-and-swap: if main moved between the
-      # checkout and now the mutation fails, the run goes red, and tomorrow's
-      # poll redoes the bump against the new head.
-      #
-      # The index is used purely to enumerate what changed -- `git add -A` then
-      # --diff-filter, so renames and deletions are git's problem and not a
-      # hand-rolled `git status` parse. Nothing is pushed with git.
-      #
-      # Runs for tracking-only updates too, not just bumps. When an upstream ref
-      # moves without moving anything the package builds from, bump-package.sh
-      # exits 3 and edits nothing but CURRENT. That still has to be committed --
-      # otherwise every poll rediscovers it and reports it again forever -- while
-      # the build below deliberately does NOT run for it. Rebuilding an unchanged
-      # pkgver-pkgrel republishes a filename that is already live and served
-      # immutable, which is how a device gets old bytes against a new signature.
       - name: Commit the bumps
         id: commit
         if: ${{ steps.poll.outputs.bumped != '0' || steps.poll.outputs.tracked != '0' }}
         env:
           GH_TOKEN: ${{ github.token }}
-          # Via env, not "${{ }}" inline: the list is built from upstream
-          # version strings and has no business in a shell command.
           BUMPED: ${{ steps.poll.outputs.bumped_list }}
           TRACKED: ${{ steps.poll.outputs.tracked_list }}
         run: |
@@ -95,18 +46,11 @@ jobs:
           deletions="$(git diff --cached --name-only --diff-filter=D -- packages \
             | jq -R '{path: .}' | jq -s '.')"
 
-          # A reported change with an empty diff would mean the bump script said
-          # it edited something it did not; an empty commit is not the way to
-          # find that out.
           [ "$(jq 'length' <<<"$additions")" != "0" ] || [ "$(jq 'length' <<<"$deletions")" != "0" ] || {
             echo "!! ${BUMPED} ${TRACKED} reported as changed but nothing under packages/ changed" >&2
             exit 1
           }
 
-          # "bump" and "track" are named separately in the subject because they
-          # mean different things to anyone reading the log later: bumped
-          # packages were rebuilt and republished, tracked ones only had CURRENT
-          # updated and were deliberately not built.
           headline="chore(packages):"
           [ -n "${BUMPED}" ] && headline="${headline} bump ${BUMPED}"
           [ -n "${BUMPED}" ] && [ -n "${TRACKED}" ] && headline="${headline};"
@@ -133,15 +77,6 @@ jobs:
           echo "==> committed $(cut -c1-8 new-oid.txt)"
           echo "oid=$(cat new-oid.txt)" >> "$GITHUB_OUTPUT"
 
-      # workflow_dispatch resolves `ref` server-side, and that read can lag the
-      # commit that was just made through the API. It did: a gamescope bump was
-      # committed at 12:58:39 and the dispatch two seconds later resolved `main`
-      # to the commit BEFORE it, so CI built the previous pin, failed, and the
-      # bump was never tested. The next poll then saw CURRENT already up to date
-      # and dispatched nothing, so the package sat unbuilt for days.
-      #
-      # `ref` cannot be a sha -- the API takes a branch or tag name only -- so
-      # the fix is to wait for the name to resolve to the sha we just wrote.
       - name: Wait for the branch to resolve to the new commit
         if: ${{ steps.commit.outputs.oid != '' }}
         env:
@@ -155,24 +90,8 @@ jobs:
             [ "${have}" = "${WANT}" ] && { echo "==> ${BRANCH} is at ${WANT:0:8}"; exit 0; }
             sleep 2
           done
-          # Not a failure: the dispatch below still runs. It is a WARNING rather
-          # than a silent pass because nothing re-checks this afterwards -- a
-          # build against the older commit leaves CURRENT bumped and the package
-          # unbuilt, and the next poll sees CURRENT already up to date and
-          # dispatches nothing. The window is small; the failure is quiet.
           echo "::warning::${BRANCH} did not resolve to ${WANT:0:8} in 60s; the build may run against an older commit"
 
-      # A push made with GITHUB_TOKEN does not trigger other workflows, so the
-      # build has to be dispatched explicitly. Documented GitHub behaviour, not
-      # something a path filter can work around.
-      #
-      # What gets built is what this run bumped, and nothing else. A bump whose
-      # build then fails says so on its own -- build.yml opens an issue -- so the
-      # signal is not lost, it just is not re-derived here.
-      #
-      # Passing names matters. Without them `packages` defaults to `all`, and a
-      # single bump rebuilds and republishes every package -- pointless builds
-      # and a database rewritten for unchanged entries.
       - name: Build what was bumped
         if: ${{ !cancelled() }}
         env:
@@ -181,9 +100,6 @@ jobs:
           BRANCH: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          # grep exits 1 when the list is empty, which is the ordinary quiet
-          # day, not an error -- without the `|| true` pipefail would take the
-          # step down and the "nothing to build" branch below could never run.
           targets="$(printf '%s' "${BUMPED}" | tr ' ' '\n' | grep -v '^$' | sort -u | tr '\n' ' ' | sed 's/ $//' || true)"
           if [ -z "${targets}" ]; then
             echo "==> nothing was bumped; nothing to build"
@@ -202,9 +118,6 @@ jobs:
             echo "Everything is up to date." >> "$GITHUB_STEP_SUMMARY"
           fi
 
-      # Only for what could NOT be bumped: AUTOBUMP=no packages needing a human,
-      # and bumps that failed outright. Successful bumps need no issue -- they
-      # produce a commit and a build, and the build reports its own failures.
       - name: Report what needs a human
         if: ${{ !cancelled() }}
         env:

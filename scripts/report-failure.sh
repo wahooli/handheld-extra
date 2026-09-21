@@ -1,14 +1,4 @@
 #!/usr/bin/env bash
-#
-# Open (or comment on) the build-failure issue. Deduped by title.
-# Needs GH_TOKEN; RUN_URL is a link back to the logs.
-#
-# The title deliberately carries NO run number. It used to, which made every run
-# a distinct title and so a brand new issue. That was survivable only because a
-# failed build was never retried -- and now it is: the poller rebuilds anything
-# the repo is not serving, so a package that keeps failing would have opened one
-# issue per day forever. One issue per ongoing failure, with a comment per run,
-# is the status board that behaviour needs.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

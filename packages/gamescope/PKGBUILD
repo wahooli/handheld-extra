@@ -1,60 +1,6 @@
-# gamescope for ARM handhelds, packaged the way armada builds it.
-#
-# ── What this actually is ────────────────────────────────────────────────────
-#
-# Not Valve's gamescope with patches bolted on. The chain armada uses is:
-#
-#   OpenGamingCollective/gamescope   a fork of ValveSoftware/gamescope, where
-#                                    the handheld work lives
-#           ▼
-#   terrapkg terra-gamescope         Fedora packaging that builds that fork at
-#                                    an exact ref, named in its spec
-#           ▼
-#   armada/packages/gamescope        pins a TERRA_COMMIT and injects its patches
-#                                    into Terra's spec
-#
-# We take the same source and the same patches, and skip Terra entirely since
-# its only role is Fedora packaging. Nothing here derives from Arch's gamescope
-# packaging beyond the dependency lists, which are facts about the software.
-#
-# ── Why not the 3.16.25 tag ──────────────────────────────────────────────────
-#
-# This package originally built ValveSoftware/gamescope at tag 3.16.25, which
-# looked reasonable and could not work: only 4 of armada's 13 patches applied,
-# and none of the 9 failures recovered with fuzz. They are written against the
-# fork, months ahead of that tag. Against the ref Terra pins they all apply --
-# and against the fork's `ogc` BRANCH they only apply while the branch happens to
-# be near that ref, which is the trap this package already fell into once.
-#
-# ── Fuzz ─────────────────────────────────────────────────────────────────────
-#
-# Terra sets %global _default_patch_fuzz 2, and armada inherits it, so the patch
-# set is maintained against that tolerance rather than exact context. One patch
-# (0010, force-vulkan-realtime) currently needs fuzz 1. Applying at -F0 as the
-# other packages here do would reject it for a cosmetic offset, so this build
-# matches upstream's tolerance -- and says so when it uses it, because silent
-# fuzz is how a patch quietly stops doing what it says.
-#
-# Maintainer: Waltteri Hooli <1420194+wahooli@users.noreply.github.com>
-
 pkgname=gamescope
-# <commit date>.<short sha> of the armada commit this was built from, so
-# `pacman -Q gamescope` names exactly which upstream state produced it.
-#
-# Was 20260917.c8c19ee8, a commit in armada-os/armada-packages -- archived on
-# 2026-09-18, with tracking moved to armada-os/armada. The patch set, _ogcref and
-# _ogccommit are all identical either side of that move, so this is the same
-# binary under a new name; what changed is the coordinate system the name is
-# written in.
-#
-# Bumped rather than left alone for two reasons. check.yml requires any edit
-# under packages/gamescope/ to land on a filename that is not already live, and
-# it is right to: it cannot tell a comment from a code change, and "it was only a
-# comment" is exactly how a real change reaches a name that is already served
-# immutable. And a pkgver pointing into an archived repo stops meaning anything
-# the moment someone tries to look it up.
 pkgver=20260920.a0bd432f
-pkgrel=1
+pkgrel=2
 pkgdesc='SteamOS session compositing window manager (OGC fork + armada handheld patches)'
 arch=(aarch64)
 url='https://github.com/OpenGamingCollective/gamescope'
@@ -112,35 +58,8 @@ makedepends=(
   catch2
 )
 
-# PINNED, and pinned to the same commit the patches come from.
-#
-# This was `#branch=ogc` for a while, on the reasoning that armada tracks the
-# fork's tip so following the branch would drift WITH the patches rather than
-# away from them. The premise was wrong. armada does not build the branch: they
-# clone terrapkg at a pinned TERRA_COMMIT and inject their patches into Terra's
-# spec, and that spec names an exact ref. The branch moved on its own schedule,
-# and when it got far enough ahead of the pinned ref, 9 of 17 patches stopped
-# applying and every build failed:
-#
-#   ::  FAILED: 0001-steamcompmgr-fix-gamepad-cursor-sprite-frozen-via-XTest.patch
-#   ::  It does not apply to the fork's ogc branch even at fuzz 2.
-#
-# The patch set was never the stale half. That same set applies to the ref Terra
-# pinned with ZERO fuzz -- the build was applying armada's patches to a tree they
-# were never written against, and had been getting away with it.
-#
-# Both halves now come off one signal, so they cannot be resolved from different
-# moments: the tracked armada commit gives TERRA_COMMIT, which gives this ref,
-# while the patch set comes from that same commit. scripts/bump-package.sh
-# rewrites both together. See upstream.env.
 _ogcref=3.16.28-ogc1
-# The ref above resolved to a commit. makepkg is pointed at this rather than the
-# tag so the fetch cannot follow a tag that upstream later moves, and so the two
-# spellings Terra has used -- a tag today, a raw sha before it -- land in the
-# same field here.
 _ogccommit=322b73ec76677beae76c74e1b8c94f2be7bb1ffb
-#
-# The subprojects are the same set gamescope's meson wrap files expect.
 source=(
   git+https://github.com/OpenGamingCollective/gamescope.git#commit=${_ogccommit}
   git+https://gitlab.freedesktop.org/emersion/libdisplay-info.git
@@ -153,9 +72,6 @@ source=(
 )
 sha256sums=(SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP)
 
-# Filled from patch-set/ at parse time rather than listed by hand: armada
-# adds and removes patches and their numbering has gaps (there is no 0012), so a
-# hand-maintained list would drift out of step with what was fetched.
 _patches=()
 for _p in "${startdir}"/patch-set/*.patch; do
   [ -e "${_p}" ] && _patches+=("$(basename "${_p}")")
@@ -165,10 +81,6 @@ unset _p
 prepare() {
   cd gamescope
 
-  # An empty patch set is not a build of this package, it is a build of stock
-  # upstream wearing its name -- and until scripts/build.sh learned to fetch
-  # patch-set/, that is exactly what CI published. The loop below cannot catch
-  # it: it iterates _patches, so with nothing in it there is nothing to notice.
   [ ${#_patches[@]} -gt 0 ] || {
     echo "::  no patches in ${startdir}/patch-set -- run scripts/fetch-patch-set.sh gamescope"
     echo "::  refusing to build: without armada's patches this is plain gamescope,"
@@ -176,21 +88,6 @@ prepare() {
     return 1
   }
 
-  # Subprojects are materialised BEFORE the patch loop, and the order is load
-  # bearing. armada's set is not confined to gamescope's own tree any more:
-  # 0021-libliftoff-fix-multiple-primary-plane-stacking.patch targets
-  # subprojects/libliftoff/, which is a git SUBMODULE and is an empty directory
-  # at checkout. Patching first rejected it against nothing --
-  #
-  #   ::  FAILED: 0021-libliftoff-fix-multiple-primary-plane-stacking.patch
-  #
-  # -- which reads exactly like a stale patch and is not one: with the submodule
-  # checked out it applies at fuzz 0. armada gets this for free because Terra's
-  # %autosetup runs against a recursive clone; here the submodules are wired to
-  # the sibling trees makepkg already cloned, so it has to be done deliberately.
-  #
-  # The subprojects come from the source array rather than the network, so meson
-  # is pointed at the already-cloned trees.
   meson subprojects download
   for submodule in src/reshade subprojects/{libdisplay-info,libliftoff,openvr,vkroots,wlroots} thirdparty/SPIRV-Headers; do
     git submodule init "${submodule}"
@@ -203,9 +100,6 @@ prepare() {
     f="${startdir}/patch-set/${p}"
     [ -f "${f}" ] || { echo "::  missing patch: ${p} (run scripts/fetch-patch-set.sh gamescope)"; return 1; }
 
-    # Exact first, then Terra's tolerance. Reporting which patches needed fuzz
-    # is the point: fuzz means the context moved, and a patch that needs more of
-    # it each release is one to check before it silently lands in the wrong place.
     fuzz=
     if patch -p1 --batch --forward -F0 --dry-run --quiet < "${f}" >/dev/null 2>&1; then
       fuzz=0

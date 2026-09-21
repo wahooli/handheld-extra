@@ -1,14 +1,4 @@
 #!/usr/bin/env bash
-#
-# Build one or more packages into out/.
-#
-#   scripts/build.sh wvkbd mangohud     build those
-#   scripts/build.sh --all              build every package
-#   scripts/build.sh --changed <ref>    build only what changed since <ref>
-#
-# Unlike the kernel repo, which has exactly one thing to build, this one is a
-# set. --changed is what CI uses: rebuilding seven packages because one of them
-# moved is the waste this whole split exists to avoid.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -31,34 +21,13 @@ all_packages() {
     done
 }
 
-# Packages whose directory changed since a git ref. A change to anything outside
-# packages/ -- a script, the Dockerfile, the workflow -- deliberately does NOT
-# trigger a rebuild of everything: those change how packages are built, not what
-# they contain, and the published package would be identical.
 changed_packages() {
     local ref="$1" p
-    # An initial push has no parent: GitHub passes the all-zero SHA as
-    # github.event.before. Diffing against it cannot work, and returning nothing
-    # would be wrong -- on a first push nothing has been published yet, so
-    # everything is genuinely new.
     if [ -z "${ref}" ] || [ "${ref}" = "0000000000000000000000000000000000000000" ]; then
         echo "no previous commit to diff against; treating every package as changed" >&2
         all_packages
         return 0
     fi
-    # Peeled to ^{commit}, NOT a bare --verify. A full 40-character hex string
-    # satisfies a bare --verify on syntax alone, without the object having to be
-    # in the clone, so the guard passed for a commit that was not there and every
-    # `git diff` below then died with `fatal: bad object`. Each of those is
-    # non-zero, `|| echo "${p}"` cannot tell that from "this package changed", and
-    # the run rebuilt all ten packages and failed at publish because every
-    # filename was already live.
-    #
-    # It is reachable in normal use: CI checks out with fetch-depth 2, so the
-    # clone holds HEAD and its parent. A FORCE-PUSH orphans the previous head,
-    # and github.event.before still names it -- a commit that is no longer an
-    # ancestor of anything and is therefore never fetched. check.yml already
-    # peels for this reason; this did not, and the two disagreed on the same push.
     git rev-parse --verify "${ref}^{commit}" >/dev/null 2>&1 || {
         echo "!! ${ref} is not a commit in this clone" >&2
         echo "   Most likely a force-push: github.event.before names the orphaned" >&2
@@ -68,12 +37,6 @@ changed_packages() {
         echo "     gh workflow run build.yml -f packages='<names>'" >&2
         return 1; }
     for p in $(all_packages); do
-        # upstream.env and README.md are excluded because nothing in the build
-        # path reads them: the poller and bump-package.sh do, makepkg does not.
-        # Rebuilding for them is not merely wasted CI -- it republishes the SAME
-        # pkgver-pkgrel with different bytes, and publish-r2.sh now refuses that
-        # outright (see the name-immutability check there for why). A comment-only
-        # edit to hyprgrass/upstream.env is exactly how that first went wrong.
         git diff --quiet "${ref}" HEAD -- "packages/${p}" \
             ":(exclude)packages/${p}/upstream.env" \
             ":(exclude)packages/${p}/README.md" || echo "${p}"
@@ -83,10 +46,6 @@ changed_packages() {
 case "${1:-}" in
     --all)     mapfile -t TARGETS < <(all_packages); shift ;;
     --changed)
-        # Command substitution rather than `mapfile < <(...)`: a process
-        # substitution discards the function's exit status, so the guard above
-        # could `return 1` and this would carry on with whatever had been printed
-        # so far. The bad-ref case has to stop the run, not shape a package list.
         _changed="$(changed_packages "${2:?--changed needs a git ref}")" || exit 1
         mapfile -t TARGETS < <(printf '%s' "${_changed}")
         shift 2 ;;
@@ -104,27 +63,7 @@ for p in "${TARGETS[@]}"; do
 done
 echo "==> building: ${TARGETS[*]}"
 
-# ── external patch sets ──────────────────────────────────────────────────────
-# A package that carries one declares PATCHES_REPO in its upstream.env, and the
-# patches are deliberately NOT committed (see the header of fetch-patch-set.sh)
-# -- so a fresh checkout, which is what every CI run is, has no patch-set/ at
-# all. Nothing used to fetch it from anywhere in the build path.
-#
-# That did not fail. Every one of those PKGBUILDs builds its patch list by
-# globbing patch-set/ at parse time, so an absent directory produced an EMPTY
-# list, prepare() looped over nothing, and the build succeeded -- publishing a
-# stock upstream package under the patched package's name. gamescope's CI build
-# of 2026-09-06 says `applied 0 armada patches` in its own log and went to R2
-# with none of armada's 13 handheld patches in it.
-#
-# Refetched on every build rather than only when patch-set/ is absent: the ref
-# pinned in upstream.env is the authority on which patches belong to this build,
-# a directory left over from an earlier CURRENT is not. Nothing is lost by it --
-# these builds already need the network for their sources and makedepends.
 for p in "${TARGETS[@]}"; do
-    # Tested with grep rather than by sourcing: upstream.env sets a dozen
-    # variables and sourcing ten of them into this shell would leak one
-    # package's PATCHES_PATH into the next package's fetch.
     grep -q '^PATCHES_REPO=' "packages/${p}/upstream.env" 2>/dev/null || continue
     ./scripts/fetch-patch-set.sh "${p}"
 done

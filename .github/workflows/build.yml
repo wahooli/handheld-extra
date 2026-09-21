@@ -1,11 +1,5 @@
 name: build
 
-# Builds only the packages that changed, and publishes them to [handheld-extra].
-#
-# The kernel repo has one thing to build and rebuilds it on any relevant change.
-# Here that would be wrong: seven packages tracking seven upstreams, where a
-# gamescope bump has nothing to say about wvkbd. `build.sh --changed` diffs the
-# package directories against the previous commit and builds the difference.
 on:
   workflow_dispatch:
     inputs:
@@ -22,31 +16,15 @@ on:
     paths:
       - 'packages/**'
       - 'Dockerfile'
-      # Only the scripts that change WHAT gets built. `scripts/**` was too broad:
-      # editing publish-r2.sh or the poller started a runner that then found no
-      # changed package and exited -- harmless here, unlike the kernel repo where
-      # the same mistake cost fifty minutes, but still a run for nothing.
-      #
-      # bump-package.sh and the poller are deliberately absent: what they produce
-      # is a commit under packages/, and THAT is the trigger. Watching the script
-      # as well would build twice for one bump.
       - 'scripts/build.sh'
       - 'scripts/build-in-container.sh'
       - 'scripts/makepkg-each.sh'
       - 'scripts/fetch-patch-set.sh'
-      # Not repo.env (publishing identity, not build content) and not this file.
-      # check.yml validates both on every push in about a minute; use
-      # `gh workflow run build.yml` when a change here needs a real build.
 
 permissions:
   contents: write
   issues: write
 
-# Serialised against itself. Not against the kernel repo -- it does not need to
-# be, because that repo writes a different database. That separation is the
-# reason these are two repositories: publishing is a read-modify-write on one
-# database object with no locking, so two producers on one database would
-# silently lose packages.
 concurrency:
   group: publish
   cancel-in-progress: false
@@ -59,10 +37,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          # build.sh --changed diffs against the previous commit, which has to
-          # actually be in the clone. The default fetch-depth of 1 has no parent
-          # and every run would rebuild everything.
-          fetch-depth: 2
+          fetch-depth: 0
 
       - name: Cache key inputs
         id: keys
@@ -98,18 +73,8 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get update -qq
-          # No pacman on the runner. Both tools that needed it -- repo-add and
-          # vercmp -- run inside the builder container, whose pacman is the one
-          # that built these packages. Ubuntu ships 6.0.2 against Arch's 7.1.0,
-          # and that gap already cost the kernel repo a failed publish: 6.0.2
-          # does not know --include-sigs and treated the unknown option as the
-          # database filename.
           sudo apt-get install -y -qq libarchive-tools unzip
 
-          # rclone from upstream, pinned, NOT from apt. Ubuntu 24.04 ships
-          # 1.60.1, an October 2022 build. Checksum-verified rather than piped
-          # from install.sh: this runs with the signing key and R2 credentials in
-          # the environment.
           RCLONE_VER=v1.75.0
           RCLONE_SHA=d0ad88ba4c8e285b7c9efa591e0ab643280a91741e13c27f3a9c0957ccfa5203
           curl -fsSL --retry 3 -o /tmp/rclone.zip \
@@ -138,18 +103,14 @@ jobs:
               ./scripts/build.sh ${{ inputs.packages }}
             fi
           else
-            ./scripts/build.sh --changed "${{ github.event.before }}"
+            BASE="${{ github.event.before }}"
+            if ! git rev-parse --verify "${BASE}^{commit}" >/dev/null 2>&1; then
+              echo "::warning::${BASE} is not in this clone (force-push?); diffing against HEAD^ instead"
+              BASE="$(git rev-parse HEAD^)"
+            fi
+            ./scripts/build.sh --changed "${BASE}"
           fi
 
-      # Right after the build, before anything that can fail: actions/cache only
-      # writes in its post step, and post steps do not run when a job fails.
-      # !cancelled(), not always(). The point is still to save on FAILURE -- a
-      # failed publish must not discard an hour of compilation -- but saving on
-      # CANCELLATION is actively harmful here: restore-keys resolves to the most
-      # recently created matching entry, so a build cancelled two minutes in
-      # would store a near-empty ccache that then shadows the complete one from
-      # the last successful build. It also makes a cancel wait for a 2 GB upload,
-      # which GitHub warns about for always().
       - name: Save ccache
         if: ${{ !cancelled() }}
         continue-on-error: true
@@ -185,8 +146,6 @@ jobs:
           if-no-files-found: ignore
 
       - name: Publish to R2
-        # Skipped when nothing was built, so a docs-only push does not rewrite
-        # the database for no reason.
         if: ${{ !inputs.skip_publish }}
         env:
           R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}

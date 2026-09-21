@@ -1,16 +1,4 @@
 #!/usr/bin/env bash
-#
-# Check that a published repo is actually consumable, from the outside.
-#
-#   REPO_URL=https://arch-repo.wahoo.li scripts/verify-repo.sh
-#
-# Run this after the first publish. It exercises what a device does -- fetch the
-# database, fetch the key, verify a package signature -- rather than what the
-# publisher does, so it catches the things a successful upload cannot: a bucket
-# that is not actually public, a custom domain that resolves but is not bound, a
-# database that shipped unsigned, cache headers that pin a stale index.
-#
-# Needs only curl and gpg. Safe to run from anywhere, including the device.
 set -euo pipefail
 
 REPO_URL="${REPO_URL:-}"
@@ -32,25 +20,18 @@ W="$(mktemp -d)"; trap 'rm -rf "${W}"' EXIT
 
 echo "==> ${REPO_URL}"
 
-# 1. The database, by the name pacman actually asks for. repo-add leaves this as
-#    a symlink locally; if the publish uploaded the link rather than its target
-#    this 404s while <repo>.db.tar.gz is fine -- a failure mode invisible to the
-#    publisher.
 if curl -fsL --max-time 60 -o "${W}/db" "${REPO_URL}/${ARCH_DIR}/${REPO_NAME}.db"; then
     ok "${REPO_NAME}.db  ($(stat -c%s "${W}/db") bytes)"
 else
     bad "${REPO_NAME}.db is not reachable -- bucket not public, or domain not bound to it?"
 fi
 
-# 2. Its signature. A missing .db.sig is the silent-unsigned-database failure:
-#    a client on DatabaseOptional accepts it and never tells you.
 if curl -fsL --max-time 60 -o "${W}/db.sig" "${REPO_URL}/${ARCH_DIR}/${REPO_NAME}.db.sig"; then
     ok "${REPO_NAME}.db.sig present"
 else
     bad "${REPO_NAME}.db.sig missing -- the database is UNSIGNED as published"
 fi
 
-# 3. The bootstrap key, and whether it actually verifies the database.
 if curl -fsL --max-time 60 -o "${W}/key.gpg" "${REPO_URL}/${REPO_NAME}.gpg"; then
     export GNUPGHOME="${W}/gnupg"; mkdir -p "${GNUPGHOME}"; chmod 700 "${GNUPGHOME}"
     if gpg --batch --quiet --import "${W}/key.gpg" 2>/dev/null; then
@@ -69,9 +50,6 @@ else
     bad "${REPO_NAME}.gpg missing at the bucket root -- devices cannot bootstrap trust"
 fi
 
-# 4. Cache headers. Getting these backwards is the nastiest failure here: an
-#    edge-cached database keeps pointing at packages retention has already
-#    pruned, and it self-heals only when the cache expires.
 hdr="$(curl -fsI --max-time 60 "${REPO_URL}/${ARCH_DIR}/${REPO_NAME}.db" 2>/dev/null || true)"
 cc="$(grep -i '^cache-control:' <<< "${hdr}" | tr -d '\r' | cut -d' ' -f2- || true)"
 case "${cc}" in
@@ -80,15 +58,12 @@ case "${cc}" in
     *)                              ok  "database Cache-Control: ${cc}" ;;
 esac
 
-# 5. A real package, end to end: pull one name out of the database and verify
-#    that both it and its detached signature are fetchable and valid.
 if [ -f "${W}/db" ] && command -v bsdtar >/dev/null; then
     mkdir -p "${W}/x"
     bsdtar -xf "${W}/db" -C "${W}/x" 2>/dev/null || true
     pkgfile="$(grep -rhA1 '^%FILENAME%$' "${W}/x" 2>/dev/null | grep -m1 '\.pkg\.tar\.zst$' || true)"
     if [ -n "${pkgfile}" ]; then
         ok "database indexes ${pkgfile}"
-        # HEAD only -- no reason to pull 160 MB to prove the object exists.
         if curl -fsI --max-time 60 -o /dev/null "${REPO_URL}/${ARCH_DIR}/${pkgfile}"; then
             ok "package object reachable"
         else

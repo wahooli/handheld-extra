@@ -1,12 +1,5 @@
 name: check
 
-# Fast validation on every push, in about a minute.
-#
-# Same rationale as the kernel repo's: build.yml deliberately does not rebuild
-# for script or workflow edits, so those changes still need somewhere to be
-# checked. Here it also guards the per-package manifests, which is where this
-# repo's equivalent mistakes live -- a package the poller silently ignores is
-# worse than one that fails loudly.
 on:
   push:
   pull_request:
@@ -22,9 +15,6 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          # The rename check below diffs this push (or PR) against the commit it
-          # started from, which has to actually be in the clone. The default
-          # fetch-depth of 1 has no parent and the check would skip itself.
           fetch-depth: 0
 
       - name: Shell syntax
@@ -35,13 +25,7 @@ jobs:
           done
           echo "$(ls scripts/*.sh | wc -l) scripts parse"
 
-      # PINNED, and run through the same container used locally. Ubuntu's apt
-      # shellcheck is a different version and disagrees -- that cost the kernel
-      # repo a red build for five SC2015 findings that were clean on a laptop.
-      #
-      # Run exactly this before pushing:
-      #   docker run --rm -v "$PWD:/mnt" -w /mnt koalaman/shellcheck:v0.11.0 \
-      #     -e SC1090,SC1091,SC2086,SC2016,SC2181,SC2012,SC2154 scripts/*.sh
+      # shellcheck is
       - name: Shellcheck
         run: |
           set -euo pipefail
@@ -49,11 +33,6 @@ jobs:
             -e SC1090,SC1091,SC2086,SC2016,SC2181,SC2012,SC2154 scripts/*.sh
           echo "shellcheck v0.11.0: clean"
 
-      # Both the YAML validity check and the mixed-conditional check live in
-      # scripts/lint-workflows.py. They cannot be inline: GitHub scans the whole
-      # workflow file for expression sequences, including inside run: blocks, so
-      # a linter that searches for those sequences makes the workflow invalid
-      # just by containing them.
       - name: Workflows
         run: |
           set -euo pipefail
@@ -74,28 +53,8 @@ jobs:
           done
           echo "$n PKGBUILDs parse"
 
-      # A rebuild must get a new filename, and this is where that is cheap to
-      # enforce. Packages are published to R2 as
-      # <pkgname>-<pkgver>-<pkgrel>-aarch64.pkg.tar.zst with
-      # `Cache-Control: immutable`, so a filename is a promise that the bytes
-      # behind it never change. Rebuild an unbumped version and the promise
-      # breaks on the DEVICE, not here: the database (max-age=60) carries the new
-      # sha256 and signature while the CDN edge keeps serving the previous build
-      # for up to a year, and pacman reports
-      #     error: <pkg>: signature from "handheld repo" is invalid
-      #     :: File ... is corrupted (invalid or corrupted package (PGP signature))
-      # which nothing on the device can clear.
-      #
-      # publish-r2.sh refuses the overwrite, so this is not the only guard -- but
-      # it refuses at the END of a build that can run two hours. One minute here
-      # is the difference between "bump pkgrel and push" and "bump pkgrel and
-      # wait for the whole thing again".
-      #
-      # upstream.env and README.md are excluded, matching build.sh: nothing in
-      # the build path reads them, so changing them is not a rebuild.
       - name: Rebuilds get a new filename
         env:
-          # A PR is diffed against its base, a push against where it started.
           BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
         run: |
           set -euo pipefail
@@ -105,10 +64,6 @@ jobs:
             exit 0
           fi
 
-          # Sourced rather than grepped: hyprgrass composes its pkgver from
-          # _srcver and _hyprver, so the literal line says nothing useful. These
-          # are our own PKGBUILDs, they only assign variables and define
-          # functions at the top level, and `source` does not run the functions.
           version_of() {
             ( set +eu; pkgver=; pkgrel=; . "$1" >/dev/null 2>&1 || true
               printf '%s-%s' "${pkgver}" "${pkgrel}" )
@@ -118,8 +73,6 @@ jobs:
           for d in packages/*/; do
             p="$(basename "${d}")"
             [ -f "${d}PKGBUILD" ] || continue
-            # A package that did not exist at BASE has nothing published under
-            # any of its names yet.
             git cat-file -e "${BASE}:${d}PKGBUILD" 2>/dev/null || continue
             git diff --quiet "${BASE}" HEAD -- "${d}" \
               ":(exclude)${d}upstream.env" ":(exclude)${d}README.md" && continue
@@ -150,10 +103,6 @@ jobs:
           for d in packages/*/; do
             p="$(basename "$d")"
 
-            # Every package needs a PKGBUILD and an upstream.env. The second is
-            # the one that goes missing: a package without it is skipped by the
-            # poller in silence, so it quietly stops being tracked and nobody
-            # notices until it is a year behind.
             [ -f "${d}PKGBUILD" ] \
               || { echo "::error::packages/${p} has no PKGBUILD"; rc=1; continue; }
             [ -f "${d}upstream.env" ] \
@@ -175,10 +124,6 @@ jobs:
                 github-paths)
                   [ -n "${GITHUB_REPO}" ] && [ -n "${TRACK_PATHS}" ] && [ -n "${CURRENT}" ] \
                     || { echo "::error::packages/${p}: TRACK=github-paths needs GITHUB_REPO, TRACK_PATHS and CURRENT"; exit 1; }
-                  # A FULL sha, not a short one. github_paths_commit always
-                  # returns 40 characters, so any other length means CURRENT was
-                  # hand-edited -- and a ref that is merely plausible still
-                  # resolves, just to something nobody chose.
                   [[ "${CURRENT}" =~ ^[0-9a-f]{40}$ ]] \
                     || { echo "::error::packages/${p}: TRACK=github-paths needs a full 40-char commit sha in CURRENT, got '${CURRENT}'"; exit 1; } ;;
                 git-tag)

@@ -1,7 +1,3 @@
-# ─── secrets ────────────────────────────────────────────────────────────────
-# This repository is public and publishes signed packages. Same list as the
-# kernel repo, for the same reason: a .gitignore is only useful for the mistake
-# you have not made yet.
 *.asc
 *.gpg
 *.pem
@@ -19,11 +15,6 @@ rclone.conf
 .rclone.conf
 .aws/
 
-# The blanket *.env is for stray credential dumps, so the two kinds of .env this
-# project actually uses have to be named back in. Copied from the kernel repo,
-# where the only exception was sources.env; here it silently swallowed repo.env
-# and every packages/*/upstream.env -- i.e. the entire upstream-tracking
-# configuration -- and the loss is invisible until something reads a default.
 .env
 .env.*
 *.env
@@ -31,7 +22,6 @@ rclone.conf
 !packages/*/upstream.env
 *.local.*
 
-# ─── build output ───────────────────────────────────────────────────────────
 out/
 .build/
 .cache/
@@ -41,66 +31,31 @@ out/
 *.pkg.tar.xz
 *.pkg.tar.xz.sig
 
-# ─── makepkg run by hand ────────────────────────────────────────────────────
-# scripts/build-in-container.sh sets BUILDDIR and SRCDEST so makepkg never writes
-# inside packages/, and that used to be the argument for having no
-# packages/*/src/ or packages/*/pkg/ rules here at all.
-#
-# The argument only covers the container path. Running `makepkg` directly in a
-# package directory is the obvious thing to do when debugging ONE package, and
-# it gets makepkg's defaults instead: src/ (an extracted upstream tree), pkg/ (a
-# staged $pkgdir, root-owned files and all) and the downloaded source tarball
-# all land in packages/<pkg>/. That is how packages/mangohud/ ended up with all
-# three untracked, one `git add -A` away from being committed.
-#
-# src/ needs the exception below, because the reason those rules were called
-# "actively wrong" is real: decky-plugin-handheld-control is first-party and its
-# src/ is TypeScript that HAS to be committed. Ignoring a directory and then
-# negating that same directory does work -- what git cannot do is re-include a
-# file whose parent directory stayed excluded, and the negation here is on the
-# directory itself. (index.tsx is already tracked, so it would survive either
-# way; the negation is what keeps a NEWLY added .tsx from being invisible to
-# `git add`.)
 packages/*/pkg/
 packages/*/src/
 !packages/decky-plugin-handheld-control/src/
 
-# Sources makepkg downloaded, same in-place case as above. No package here
-# vendors its own tarball -- every one of them fetches, so anything matching
-# this is build input, not content.
 packages/*/*.tar.gz
 packages/*/*.tar.xz
 packages/*/*.tar.bz2
 packages/*/*.tar.zst
 
-# ─── in-place JS build output ───────────────────────────────────────────────
-# decky-plugin-handheld-control is first-party, so its PKGBUILD has an empty
-# source=() and builds from $startdir directly -- BUILDDIR and SRCDEST cannot
-# keep pnpm out of the package directory the way they do for downloaded sources.
-#
-# pnpm-lock.yaml is ignored rather than committed, which is a decision worth
-# knowing about: see the note in that package's directory.
 packages/*/node_modules/
 packages/*/dist/
 packages/*/pnpm-lock.yaml
 packages/*/package-lock.json
 packages/*/.pnpm/
 
-# ─── fetched, not vendored ──────────────────────────────────────────────────
-# External patch sets, pulled by scripts/fetch-patch-set.sh at the ref
-# pinned in each package's upstream.env. Committing them would make this a quiet
-# fork of armada's work; the pinned commit is the reviewable part.
 packages/*/patch-set/
 
-# ─── generated ──────────────────────────────────────────────────────────────
 .build-report.md
 .upstream-report.md
 
 packages/gtk2/
 
-# ─── editor / OS ────────────────────────────────────────────────────────────
 .DS_Store
 *.swp
 *~
 .idea/
 .vscode/
+__pycache__

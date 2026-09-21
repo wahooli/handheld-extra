@@ -30,7 +30,6 @@ import decky
 CLI = "/usr/bin/handheld-power"
 TIMEOUT = 10
 
-
 async def _run(*args):
     """Run handheld-power and return (rc, stdout, stderr).
 
@@ -54,7 +53,6 @@ async def _run(*args):
 
     return proc.returncode, out.decode(errors="replace"), err.decode(errors="replace")
 
-
 class Plugin:
 
     async def _main(self):
@@ -66,8 +64,6 @@ class Plugin:
     async def _uninstall(self):
         pass
 
-    # ── reads ────────────────────────────────────────────────────────────────
-
     async def get_status(self) -> dict:
         """Everything the panel renders, in one call.
 
@@ -77,8 +73,6 @@ class Plugin:
         """
         rc, out, err = await _run("status", "--json")
         if rc != 0:
-            # The daemon not running is the common case worth naming clearly —
-            # everything else is passed through as-is.
             message = err.strip() or f"handheld-power exited {rc}"
             decky.logger.warning("handheld-control: %s", message)
             return {"ok": False, "error": message}
@@ -104,22 +98,17 @@ class Plugin:
         if rc == 0:
             result["profiles"] = [ln[2:].strip() for ln in out.splitlines() if ln[2:].strip()]
 
-        # A device with no fan exits non-zero here; that is not an error, it is
-        # the answer, and the frontend hides the control on an empty list.
         rc, out, _ = await _run("fan")
         if rc == 0:
             result["fanCurves"] = [ln[2:].strip() for ln in out.splitlines() if ln[2:].strip()]
 
         return result
 
-    # ── writes ───────────────────────────────────────────────────────────────
-
     async def set_profile(self, name: str) -> dict:
         rc, _, err = await _run("profile", name)
         return {"ok": rc == 0, "error": err.strip()}
 
     async def set_fan_curve(self, name: str) -> dict:
-        # "profile" is the CLI's word for clearing the override; see cmd_fan.
         rc, _, err = await _run("fan", name)
         return {"ok": rc == 0, "error": err.strip()}
 

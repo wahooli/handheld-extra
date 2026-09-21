@@ -1,10 +1,4 @@
 #!/usr/bin/env bash
-#
-# Keep exactly one open issue describing which packages are behind upstream.
-#
-# Edited in place rather than appended to or reopened per run: this is a status
-# board, not a log. If nothing is behind, the issue is closed rather than left
-# open saying "nothing to do".
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
