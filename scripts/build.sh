@@ -46,8 +46,27 @@ changed_packages() {
         all_packages
         return 0
     fi
-    git rev-parse --verify "${ref}" >/dev/null 2>&1 || {
-        echo "!! not a valid git ref: ${ref}" >&2; return 1; }
+    # Peeled to ^{commit}, NOT a bare --verify. A full 40-character hex string
+    # satisfies a bare --verify on syntax alone, without the object having to be
+    # in the clone, so the guard passed for a commit that was not there and every
+    # `git diff` below then died with `fatal: bad object`. Each of those is
+    # non-zero, `|| echo "${p}"` cannot tell that from "this package changed", and
+    # the run rebuilt all ten packages and failed at publish because every
+    # filename was already live.
+    #
+    # It is reachable in normal use: CI checks out with fetch-depth 2, so the
+    # clone holds HEAD and its parent. A FORCE-PUSH orphans the previous head,
+    # and github.event.before still names it -- a commit that is no longer an
+    # ancestor of anything and is therefore never fetched. check.yml already
+    # peels for this reason; this did not, and the two disagreed on the same push.
+    git rev-parse --verify "${ref}^{commit}" >/dev/null 2>&1 || {
+        echo "!! ${ref} is not a commit in this clone" >&2
+        echo "   Most likely a force-push: github.event.before names the orphaned" >&2
+        echo "   head, which fetch-depth 2 never fetches. Refusing to diff against" >&2
+        echo "   it, because every package would look changed." >&2
+        echo "   Build what actually changed instead:" >&2
+        echo "     gh workflow run build.yml -f packages='<names>'" >&2
+        return 1; }
     for p in $(all_packages); do
         # upstream.env and README.md are excluded because nothing in the build
         # path reads them: the poller and bump-package.sh do, makepkg does not.
@@ -63,7 +82,14 @@ changed_packages() {
 
 case "${1:-}" in
     --all)     mapfile -t TARGETS < <(all_packages); shift ;;
-    --changed) mapfile -t TARGETS < <(changed_packages "${2:?--changed needs a git ref}"); shift 2 ;;
+    --changed)
+        # Command substitution rather than `mapfile < <(...)`: a process
+        # substitution discards the function's exit status, so the guard above
+        # could `return 1` and this would carry on with whatever had been printed
+        # so far. The bad-ref case has to stop the run, not shape a package list.
+        _changed="$(changed_packages "${2:?--changed needs a git ref}")" || exit 1
+        mapfile -t TARGETS < <(printf '%s' "${_changed}")
+        shift 2 ;;
     "")        echo "usage: $0 <package>... | --all | --changed <ref>" >&2; exit 1 ;;
     *)         TARGETS=("$@") ;;
 esac

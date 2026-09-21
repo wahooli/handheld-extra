@@ -44,8 +44,20 @@ source scripts/lib-upstream.sh
 BUMP=
 [ "${1:-}" = "--bump" ] && BUMP=1
 
-# One request per GitHub-tracked package, plus a few for armada lookups.
-require_rate_limit "$(( $(ls -d packages/*/ | wc -l) * 2 ))" || exit 1
+# One request per GitHub-tracked package -- but a TRACK=github-paths package
+# costs one per WATCHED PATH, not one per package, plus one more to read a commit
+# date when it versions from one.
+#
+# Counted rather than multiplied. A multiplier has to be wrong in one direction:
+# too low and this misses the exhaustion it exists to catch, too high and it
+# refuses runs that would have succeeded -- which an unauthenticated local run
+# hits immediately, since 60/hour is the whole budget there. Adding the paths up
+# costs one glob and is simply correct. The +4 is slack for the bump-time
+# lookups, which only happen for packages that actually moved.
+require_rate_limit "$((
+    $(ls -d packages/*/ | wc -l)
+    + $(sed -n 's/^TRACK_PATHS=//p' packages/*/upstream.env 2>/dev/null | tr -d '"' | wc -w)
+    + 4 ))" || exit 1
 
 BEHIND=(); ERRORS=(); BUMPED=(); TRACKED=(); ABIDRIFT=(); CHECKED=0
 
@@ -55,6 +67,7 @@ for conf in packages/*/upstream.env; do
     # They look unused because upstream_latest() consumes them from the sourced
     # lib, which shellcheck cannot follow across the source boundary.
     TRACK=; GITHUB_REPO=; GIT_URL=; OCI_IMAGE=; OCI_TAG_RE=; AUR_PKG=; CURRENT=; INCLUDE_PRERELEASE=
+    TRACK_PATHS=
     ABI_PIN_PKG=; ABI_PIN_REPO=; ABI_PIN_VAR=; ABI_PIN_AUTOBUMP=
     # shellcheck source=/dev/null
     source "${conf}"
@@ -134,6 +147,7 @@ for conf in packages/*/upstream.env; do
     latest="$(upstream_latest 2>/dev/null || true)"
     case "${TRACK}" in
         github-release) src="${GITHUB_REPO}" ;;
+        github-paths)   src="${GITHUB_REPO} (${TRACK_PATHS})" ;;
         git-tag)        src="${GIT_URL}" ;;
         oci)            src="${OCI_IMAGE}" ;;
         aur)            src="aur/${AUR_PKG}" ;;
@@ -175,9 +189,10 @@ for conf in packages/*/upstream.env; do
                 continue                      # bumped: not "behind" any more
             fi
             # Exit 3: the tracked ref moved but the package did not -- an armada
-            # commit that touched neither VERSION, COMMIT nor the patch set. The
-            # CURRENT edit is worth committing so tomorrow's poll does not report
-            # it again, but building it is not: it would rebuild the same
+            # commit that touched a watched path without moving VERSION, COMMIT
+            # or the patch set the build consumes. The CURRENT edit is worth
+            # committing so tomorrow's poll does not report it again, but
+            # building it is not: it would rebuild the same
             # pkgver-pkgrel into non-identical bytes and publish-r2.sh would
             # refuse to overwrite the name that is already live. Kept out of
             # bumped_list, which is what poll.yml dispatches a build for.
@@ -194,6 +209,11 @@ for conf in packages/*/upstream.env; do
         fi
         case "${TRACK}" in
             oci) BEHIND+=("${pkg}|${CURRENT:-none}|${latest}|https://${OCI_IMAGE%%/*}/${OCI_IMAGE#*/}") ;;
+            # The commit itself, not a compare against CURRENT: a compare link is
+            # more useful but 404s whenever CURRENT is not a sha in that repo,
+            # which is every package that has not been through one bump since it
+            # started being tracked this way.
+            github-paths) BEHIND+=("${pkg}|${CURRENT}|${latest}|https://github.com/${GITHUB_REPO}/commit/${latest}") ;;
             github-release) BEHIND+=("${pkg}|${CURRENT}|${latest}|https://github.com/${GITHUB_REPO}/releases/tag/${latest}") ;;
             aur) BEHIND+=("${pkg}|${CURRENT}|${latest}|https://aur.archlinux.org/packages/${AUR_PKG}") ;;
             *) BEHIND+=("${pkg}|${CURRENT}|${latest}|${src}") ;;

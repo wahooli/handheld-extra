@@ -7,8 +7,8 @@ name: poll upstreams
 # home rather than two.
 #
 # What made this safe was giving each package a declaration of how its version is
-# derived -- upstream tag through a sed, armada's BASE.env, or armada's published
-# OCI tag -- instead of assuming one rule fits all. A package that cannot be
+# derived -- upstream tag through a sed, armada's BASE.env, the date and sha of
+# the armada commit itself -- instead of assuming one rule fits all. A package that cannot be
 # bumped mechanically says so: hyprgrass sets AUTOBUMP=no because its pkgver is
 # composed with a pinned Hyprland version, and taking a new release without
 # checking which Hyprland the image ships builds a plugin for the wrong ABI.
@@ -155,26 +155,25 @@ jobs:
             [ "${have}" = "${WANT}" ] && { echo "==> ${BRANCH} is at ${WANT:0:8}"; exit 0; }
             sleep 2
           done
-          # Not a failure: the dispatch below still runs, and the self-heal step
-          # rebuilds anything that ends up unpublished. Saying so beats a red run.
+          # Not a failure: the dispatch below still runs. It is a WARNING rather
+          # than a silent pass because nothing re-checks this afterwards -- a
+          # build against the older commit leaves CURRENT bumped and the package
+          # unbuilt, and the next poll sees CURRENT already up to date and
+          # dispatches nothing. The window is small; the failure is quiet.
           echo "::warning::${BRANCH} did not resolve to ${WANT:0:8} in 60s; the build may run against an older commit"
 
       # A push made with GITHUB_TOKEN does not trigger other workflows, so the
       # build has to be dispatched explicitly. Documented GitHub behaviour, not
       # something a path filter can work around.
       #
-      # The list is bumped-this-run UNION not-currently-published. The union is
-      # the point: a bump whose build failed, raced, or never ran is invisible to
-      # every other check here -- the poller's question is "is CURRENT behind
-      # upstream", and after a bump the answer is no even though nothing was
-      # ever built. Comparing against what the repo actually SERVES asks the only
-      # question that survives an unknown failure mode, so a package heals on the
-      # next poll whatever went wrong.
+      # What gets built is what this run bumped, and nothing else. A bump whose
+      # build then fails says so on its own -- build.yml opens an issue -- so the
+      # signal is not lost, it just is not re-derived here.
       #
       # Passing names matters. Without them `packages` defaults to `all`, and a
       # single bump rebuilds and republishes every package -- pointless builds
       # and a database rewritten for unchanged entries.
-      - name: Build what was bumped or is missing
+      - name: Build what was bumped
         if: ${{ !cancelled() }}
         env:
           GH_TOKEN: ${{ github.token }}
@@ -182,16 +181,12 @@ jobs:
           BRANCH: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          # Fails closed: an unreachable repo exits non-zero and dispatches
-          # nothing, rather than reading as "nothing is published" and rebuilding
-          # everything.
-          missing="$(./scripts/find-unpublished.sh || true)"
           # grep exits 1 when the list is empty, which is the ordinary quiet
           # day, not an error -- without the `|| true` pipefail would take the
           # step down and the "nothing to build" branch below could never run.
-          targets="$(printf '%s %s' "${BUMPED}" "$(echo ${missing})" | tr ' ' '\n' | grep -v '^$' | sort -u | tr '\n' ' ' | sed 's/ $//' || true)"
+          targets="$(printf '%s' "${BUMPED}" | tr ' ' '\n' | grep -v '^$' | sort -u | tr '\n' ' ' | sed 's/ $//' || true)"
           if [ -z "${targets}" ]; then
-            echo "==> everything published matches this tree; nothing to build"
+            echo "==> nothing was bumped; nothing to build"
             exit 0
           fi
           echo "==> dispatching build for: ${targets}"

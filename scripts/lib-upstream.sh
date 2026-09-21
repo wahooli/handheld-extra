@@ -63,6 +63,9 @@ upstream_latest() {
         oci)
             oci_latest_tag "${OCI_IMAGE}" "${OCI_TAG_RE:-.}"
             ;;
+        github-paths)
+            github_paths_commit "${GITHUB_REPO}" "${TRACK_PATHS}"
+            ;;
         aur)
             aur_pkg_version "${AUR_PKG}"
             ;;
@@ -70,9 +73,62 @@ upstream_latest() {
     esac
 }
 
+# The newest commit touching any of a set of paths in a GitHub repo.
+#
+#   github_paths_commit armada-os/armada 'packages/gamescope/patches packages/TERRA.env'
+#     ->  a0bd432ffc5768d2fbaa752892c66f7e7bab9d8a
+#
+# This is how a publisher who ships no artifact is tracked: the commit IS the
+# release. Everything the package needs then resolves from that one sha -- the
+# patch set, the base version, the source ref -- so the inputs can never be read
+# from two different moments, which is the failure the OCI-tag tracking it
+# replaced existed to prevent and which a "latest commit on the default branch"
+# watch would reintroduce the moment the publisher touched an unrelated package.
+#
+# PATHS, plural, and narrow on purpose. It lists what THIS repo actually
+# consumes, not what upstream considers a rebuild: gamescope reads their patches
+# and their TERRA.env and nothing else, so an edit to their build.sh is correctly
+# invisible here. Listing a path we do not consume buys pointless rebuilds;
+# omitting one we do buys a silent stale pin -- which is exactly what watching
+# only `packages/gamescope/` would have done when TERRA_COMMIT moved.
+#
+# One request per path, so the caller's rate-limit budget has to account for
+# paths rather than packages. Newest committer date wins; a single commit
+# touching several of the paths simply answers first.
+#
+# Fails closed: a path nobody has ever committed to returns nothing rather than
+# silently narrowing the watch to the paths that do exist.
+github_paths_commit() {
+    local repo="$1" paths="$2" path sha date best_sha='' best_date=''
+    [ -n "${paths}" ] || return 1
+    for path in ${paths}; do
+        sha=; date=
+        read -r sha date <<< "$(gh_get "${API}/repos/${repo}/commits?per_page=1&path=${path}" 2>/dev/null \
+            | jq -r '.[0] | select(.sha != null) | "\(.sha) \(.commit.committer.date)"' 2>/dev/null)" || true
+        [ -n "${sha}" ] || return 1
+        if [ -z "${best_date}" ] || [[ "${date}" > "${best_date}" ]]; then
+            best_sha="${sha}"; best_date="${date}"
+        fi
+    done
+    [ -n "${best_sha}" ] || return 1
+    printf '%s' "${best_sha}"
+}
+
+# The committer date of one commit, as YYYYMMDD.
+#
+#   github_commit_date armada-os/armada a0bd432ffc57...  ->  20260920
+#
+# Only VERSION_FROM=commit-date needs this, and only at bump time, so it is a
+# second request rather than something threaded through every lookup.
+github_commit_date() {
+    gh_get "${API}/repos/$1/commits/$2" 2>/dev/null \
+        | jq -r '.commit.committer.date // empty' 2>/dev/null \
+        | cut -c1-10 | tr -d -
+}
+
 # The tag an OCI image's `latest` currently points at.
 #
-#   oci_latest_tag ghcr.io/armada-os/armada-packages/gamescope '^[0-9]{8}-[0-9a-f]{8}$'
+#   oci_latest_tag ghcr.io/some-publisher/packages/gamescope '^[0-9]{8}-[0-9a-f]{8}$'
 #
 # Resolved by digest rather than by parsing tag names: `latest` always points at
 # the current build, and the release tag sharing its digest is the name for it.
@@ -90,9 +146,13 @@ upstream_latest() {
 #   Paging    /tags/list returns one page, 100 tags on ghcr. For a publisher with
 #             more than that the current release may not be on it: tested against
 #             ghcr.io/home-assistant/home-assistant, whose first page is tags
-#             from 2021, and nothing matched. armada publishes a handful per
-#             package so this never bites; a publisher with many tags would need
-#             this to follow the Link header.
+#             from 2021, and nothing matched. A publisher with many tags would
+#             need this to follow the Link header.
+#
+# No package tracks this today -- the one publisher that did stopped shipping
+# artifacts and is now followed with TRACK=github-paths. It is kept because it is
+# the only tracking mode here that needs no GitHub API and so no rate limit,
+# which is the right answer for any publisher that does tag its releases.
 oci_latest_tag() {
     local image="$1" tag_re="${2:-.}" host path tok digest tag
     host="${image%%/*}"
@@ -122,7 +182,7 @@ oci_latest_tag() {
 
 # A KEY=value from a shell-style file in a GitHub repo at a given ref.
 #
-#   repo_file_value armada-os/armada-packages 78f00c74 inputplumber/BASE.env VERSION
+#   repo_file_value armada-os/armada 956bd2c7 packages/inputplumber/BASE.env VERSION
 #
 # raw.githubusercontent.com rather than the contents API: no rate limit, no token.
 repo_file_value() {
@@ -261,9 +321,9 @@ git_ref_commit() {
     git_tag_commit "${url}" "${ref}"
 }
 
-# The SOURCE ref an armada artifact was actually built from.
+# The SOURCE ref armada's patches are written against.
 #
-#   armada_terra_source_ref armada-os/armada-packages 24d88394 TERRA.env \
+#   armada_terra_source_ref armada-os/armada a0bd432f packages/TERRA.env \
 #       TERRA_COMMIT terrapkg/packages \
 #       anda/games/terra-gamescope/terra-gamescope.spec 'ver gamescope_commit'
 #     ->  3.16.28-ogc1
@@ -271,13 +331,17 @@ git_ref_commit() {
 # armada does not package from a source tree of their own: they clone terrapkg
 # at a pinned TERRA_COMMIT and inject their patches into Terra's spec, and it is
 # THAT spec which names the upstream ref. So the ref armada's patches are written
-# against is two hops from the published artifact, and this walks them:
+# against is two hops from the commit we track, and this walks them:
 #
-#   artifact tag -> armada commit -> TERRA.env TERRA_COMMIT -> terra spec -> ref
+#   tracked commit -> packages/TERRA.env TERRA_COMMIT -> terra spec -> ref
 #
-# Everything comes off the one artifact tag, so the source and the patch set can
-# never be resolved from different moments -- which is the entire failure this
-# exists to prevent. gamescope built `#branch=ogc` for a while, a MOVING branch,
+# Everything comes off the one tracked commit, so the source and the patch set
+# can never be resolved from different moments -- which is the entire failure
+# this exists to prevent. That used to be the one published artifact tag; since
+# armada stopped publishing artifacts it is the one commit sha, and the guarantee
+# is the same because both halves are still read at a single ref.
+#
+# gamescope built `#branch=ogc` for a while, a MOVING branch,
 # while the patches were pinned to an artifact; when the fork got far enough
 # ahead, 9 of 17 patches stopped applying and every build failed. The patch set
 # was never stale -- against the ref Terra pinned, that same set applies with

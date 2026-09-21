@@ -13,7 +13,10 @@
 # vendor:
 #   PATCHES_REPO   owner/repo to take patches from
 #   PATCHES_PATH   directory within it holding patches/
-#   PATCHES_REF    how to turn CURRENT into a git ref (a sed expression)
+#   PATCHES_REF    how to turn CURRENT into a git ref (a sed expression).
+#                  Defaults to identity, because CURRENT is normally already the
+#                  ref; a publisher whose CURRENT is an artifact tag with the ref
+#                  embedded in it sets this to dig the ref back out.
 #
 # They land in packages/<pkg>/patch-set/, which is gitignored -- so they
 # cannot be committed by accident and cannot make `build.sh --changed` think the
@@ -27,16 +30,16 @@ PKG="${1:?usage: fetch-patch-set.sh <package>}"
 CONF="packages/${PKG}/upstream.env"
 [ -f "${CONF}" ] || { echo "!! no ${CONF}" >&2; exit 1; }
 
-PATCHES_REPO=; PATCHES_PATH=; PATCHES_REF='s/.*//'; CURRENT=
+PATCHES_REPO=; PATCHES_PATH=; PATCHES_REF='s/.*/&/'; CURRENT=
 # shellcheck source=/dev/null
 source "${CONF}"
 [ -n "${PATCHES_REPO}" ] && [ -n "${PATCHES_PATH}" ] \
     || { echo "!! ${PKG} declares no PATCHES_REPO/PATCHES_PATH -- it carries no external patch set" >&2; exit 1; }
 [ -n "${CURRENT}" ] || { echo "!! ${CONF} has no CURRENT" >&2; exit 1; }
 
-# CURRENT identifies the published artifact; PATCHES_REF says how to get a git
-# ref out of it. For armada that tag is <date>-<short-sha> and the sha half is
-# the commit the artifact was built from, so the patch set matches the build.
+# CURRENT identifies the upstream state; PATCHES_REF says how to get a git ref
+# out of it. For armada CURRENT IS the commit, so the expression is identity and
+# the patch set is read at exactly the commit everything else resolves from.
 REF="$(printf '%s' "${CURRENT}" | sed -E "${PATCHES_REF}")"
 [ -n "${REF}" ] || { echo "!! PATCHES_REF produced an empty ref from CURRENT=${CURRENT}" >&2; exit 1; }
 

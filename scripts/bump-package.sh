@@ -12,8 +12,9 @@
 #
 #   VERSION_FROM=upstream-tag   the release/tag, through VERSION_SED
 #   VERSION_FROM=oci-tag        the published OCI tag, dashes to dots
+#   VERSION_FROM=commit-date    <commit date>.<short sha> of the tracked commit
 #   VERSION_FROM=repo-file      VERSION and COMMIT from a file in PATCHES_REPO,
-#                               read at the ref the artifact was built from
+#                               read at the tracked ref
 #
 # Checksums are refreshed with updpkgsums when the PKGBUILD carries real ones.
 # Most here are SKIP -- git sources, or tarballs taken on trust -- so the
@@ -45,7 +46,12 @@ IMAGE="${IMAGE:-linux-handheld-builder:latest}"
 # Defaults, then the package's own values. GITHUB_REPO/GIT_URL/INCLUDE_PRERELEASE
 # look unused here because upstream_latest() in lib-upstream.sh reads them.
 TRACK=; GITHUB_REPO=; GIT_URL=; OCI_IMAGE=; OCI_TAG_RE=; AUR_PKG=; CURRENT=; INCLUDE_PRERELEASE=
-PATCHES_REPO=; PATCHES_PATH=; PATCHES_REF='s/^[0-9]+-//'; VERSION_FILE=
+TRACK_PATHS=
+# PATCHES_REF defaults to identity: CURRENT is normally already the git ref the
+# patches are read at. Only a publisher whose CURRENT is something else -- an
+# artifact tag with the ref embedded in it, as this repo tracked before armada
+# stopped publishing artifacts -- needs to set it.
+PATCHES_REPO=; PATCHES_PATH=; PATCHES_REF='s/.*/&/'; VERSION_FILE=
 SOURCE_REF_FROM=; SOURCE_REF_VAR=; SOURCE_COMMIT_VAR=; SOURCE_GIT=
 TERRA_ENV_FILE=; TERRA_ENV_KEY=; TERRA_SPEC_REPO=; TERRA_SPEC_PATH=; TERRA_SPEC_KEYS=
 AUTOBUMP=yes; VERSION_VAR=pkgver; VERSION_FROM=upstream-tag; VERSION_SED='s/^v//'
@@ -72,9 +78,20 @@ newver=; newcommit=
 case "${VERSION_FROM}" in
     upstream-tag)
         newver="$(printf '%s' "${latest}" | sed -E "${VERSION_SED}")" ;;
+    commit-date)
+        # <commit date>.<short sha>, which is the shape the published artifact
+        # tag had before the publisher stopped shipping artifacts. Keeping the
+        # shape is not nostalgia: pkgver has to sort FORWARD across the change of
+        # tracking or `pacman -Syu` sees a downgrade and refuses it, and a
+        # date-led version is the only form that keeps sorting past the old tags.
+        # It also still answers the question the old one did -- `pacman -Q` names
+        # exactly which upstream commit the installed package was built from.
+        _cdate="$(github_commit_date "${GITHUB_REPO}" "${latest}")"
+        [ -n "${_cdate}" ] || { echo "!! ${PKG}: could not read the commit date of ${latest}" >&2; exit 1; }
+        newver="${_cdate}.${latest:0:8}" ;;
     repo-file)
-        # The file is read at the ref the artifact was built from, so pkgver and
-        # _commit match the published build rather than whatever the publisher's
+        # The file is read at the tracked ref, so pkgver and _commit match the
+        # commit the patch set is taken from rather than whatever the publisher's
         # default branch happens to say today.
         _ref="$(printf '%s' "${latest}" | sed -E "${PATCHES_REF}")"
         newver="$(repo_file_value "${PATCHES_REPO}" "${_ref}" "${VERSION_FILE}" VERSION)"
@@ -92,9 +109,10 @@ case "${newver}" in
     ""|*-*|*:*|*/*|*" "*) echo "!! ${PKG}: '${newver}' is not a valid pkgver" >&2; exit 1 ;;
 esac
 # The tracked ref moving does not always mean the packaged version moves: an
-# armada commit can touch only patches, and a retagged upstream can transform to
-# the same pkgver. Updating CURRENT is still right, but rebuilding for an
-# identical version is not -- pkgrel exists for that and the caller decides.
+# armada commit can touch a watched path without moving VERSION or the patch set,
+# and a retagged upstream can transform to the same pkgver. Updating CURRENT is
+# still right, but rebuilding for an identical version is not -- pkgrel exists
+# for that and the caller decides.
 oldver="$(grep -oE "^${VERSION_VAR}=.*" "${D}/PKGBUILD" | head -1 | cut -d= -f2-)"
 oldrel="$(grep -oE '^pkgrel=.*' "${D}/PKGBUILD" | head -1 | cut -d= -f2-)"
 echo "    ${VERSION_VAR}: ${oldver} -> ${newver}"
@@ -175,8 +193,7 @@ fi
 #   version same, build    pkgrel+1        umtp-responder and inputplumber track
 #     inputs moved                         armada's BASE.env, where a commit can
 #                                          move COMMIT or the patch set without
-#                                          moving VERSION; gamescope's oci-tag
-#                                          can map two tags onto one pkgver
+#                                          moving VERSION
 #   version same, only     unchanged       nothing to rebuild. Exit 3 so the
 #     CURRENT moved                        caller commits it WITHOUT building.
 #

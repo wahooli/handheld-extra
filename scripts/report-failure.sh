@@ -36,7 +36,7 @@ Common causes here, in rough order of likelihood:
   reason a package that built last week stops building.
 - **A patch stopped applying.** \`gamescope\` and \`wvkbd\` carry patches. For
   gamescope the source ref and the patch set are resolved from ONE armada
-  artifact, so they cannot drift apart; a failure there usually means armada
+  commit, so they cannot drift apart; a failure there usually means armada
   added a patch targeting a path this build does not present the same way.
 - **A new makedepend.** \`makepkg --syncdeps\` installs them, so this shows up as
   a missing-package error rather than a compile error.

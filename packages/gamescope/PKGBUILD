@@ -10,7 +10,7 @@
 #   terrapkg terra-gamescope         Fedora packaging that builds that fork at
 #                                    an exact ref, named in its spec
 #           ▼
-#   armada-packages/gamescope        pins a TERRA_COMMIT and injects its patches
+#   armada/packages/gamescope        pins a TERRA_COMMIT and injects its patches
 #                                    into Terra's spec
 #
 # We take the same source and the same patches, and skip Terra entirely since
@@ -38,11 +38,22 @@
 # Maintainer: Waltteri Hooli <1420194+wahooli@users.noreply.github.com>
 
 pkgname=gamescope
-# armada's published build, from ghcr.io/armada-os/armada-packages/gamescope,
-# with the dash swapped for a dot because pkgver forbids dashes. Tying the
-# version to their artifact rather than inventing one means `pacman -Q gamescope`
-# names exactly which armada build this is.
-pkgver=20260917.c8c19ee8
+# <commit date>.<short sha> of the armada commit this was built from, so
+# `pacman -Q gamescope` names exactly which upstream state produced it.
+#
+# Was 20260917.c8c19ee8, a commit in armada-os/armada-packages -- archived on
+# 2026-09-18, with tracking moved to armada-os/armada. The patch set, _ogcref and
+# _ogccommit are all identical either side of that move, so this is the same
+# binary under a new name; what changed is the coordinate system the name is
+# written in.
+#
+# Bumped rather than left alone for two reasons. check.yml requires any edit
+# under packages/gamescope/ to land on a filename that is not already live, and
+# it is right to: it cannot tell a comment from a code change, and "it was only a
+# comment" is exactly how a real change reaches a name that is already served
+# immutable. And a pkgver pointing into an archived repo stops meaning anything
+# the moment someone tries to look it up.
+pkgver=20260920.a0bd432f
 pkgrel=1
 pkgdesc='SteamOS session compositing window manager (OGC fork + armada handheld patches)'
 arch=(aarch64)
@@ -101,14 +112,14 @@ makedepends=(
   catch2
 )
 
-# PINNED, and pinned to the same artifact the patches come from.
+# PINNED, and pinned to the same commit the patches come from.
 #
 # This was `#branch=ogc` for a while, on the reasoning that armada tracks the
 # fork's tip so following the branch would drift WITH the patches rather than
 # away from them. The premise was wrong. armada does not build the branch: they
 # clone terrapkg at a pinned TERRA_COMMIT and inject their patches into Terra's
 # spec, and that spec names an exact ref. The branch moved on its own schedule,
-# and when it got far enough ahead of the artifact, 9 of 17 patches stopped
+# and when it got far enough ahead of the pinned ref, 9 of 17 patches stopped
 # applying and every build failed:
 #
 #   ::  FAILED: 0001-steamcompmgr-fix-gamepad-cursor-sprite-frozen-via-XTest.patch
@@ -119,9 +130,9 @@ makedepends=(
 # were never written against, and had been getting away with it.
 #
 # Both halves now come off one signal, so they cannot be resolved from different
-# moments: the artifact tag gives armada's commit, which gives TERRA_COMMIT,
-# which gives this ref, while the patch set comes from that same armada commit.
-# scripts/bump-package.sh rewrites both together. See upstream.env.
+# moments: the tracked armada commit gives TERRA_COMMIT, which gives this ref,
+# while the patch set comes from that same commit. scripts/bump-package.sh
+# rewrites both together. See upstream.env.
 _ogcref=3.16.28-ogc1
 # The ref above resolved to a commit. makepkg is pointed at this rather than the
 # tag so the fetch cannot follow a tag that upstream later moves, and so the two

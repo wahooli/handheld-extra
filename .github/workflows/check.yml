@@ -160,7 +160,7 @@ jobs:
               || { echo "::error::packages/${p} has no upstream.env -- the poller would ignore it"; rc=1; continue; }
 
             # shellcheck disable=SC1090
-            ( TRACK=; GITHUB_REPO=; GIT_URL=; OCI_IMAGE=; OCI_TAG_RE=; AUR_PKG=; CURRENT=
+            ( TRACK=; GITHUB_REPO=; GIT_URL=; OCI_IMAGE=; OCI_TAG_RE=; AUR_PKG=; CURRENT=; TRACK_PATHS=
               . "${d}upstream.env"
               case "${TRACK}" in
                 none) ;;
@@ -172,6 +172,15 @@ jobs:
                 github-release)
                   [ -n "${GITHUB_REPO}" ] && [ -n "${CURRENT}" ] \
                     || { echo "::error::packages/${p}: TRACK=github-release needs GITHUB_REPO and CURRENT"; exit 1; } ;;
+                github-paths)
+                  [ -n "${GITHUB_REPO}" ] && [ -n "${TRACK_PATHS}" ] && [ -n "${CURRENT}" ] \
+                    || { echo "::error::packages/${p}: TRACK=github-paths needs GITHUB_REPO, TRACK_PATHS and CURRENT"; exit 1; }
+                  # A FULL sha, not a short one. github_paths_commit always
+                  # returns 40 characters, so any other length means CURRENT was
+                  # hand-edited -- and a ref that is merely plausible still
+                  # resolves, just to something nobody chose.
+                  [[ "${CURRENT}" =~ ^[0-9a-f]{40}$ ]] \
+                    || { echo "::error::packages/${p}: TRACK=github-paths needs a full 40-char commit sha in CURRENT, got '${CURRENT}'"; exit 1; } ;;
                 git-tag)
                   [ -n "${GIT_URL}" ] && [ -n "${CURRENT}" ] \
                     || { echo "::error::packages/${p}: TRACK=git-tag needs GIT_URL and CURRENT"; exit 1; } ;;
