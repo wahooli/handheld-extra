@@ -1,7 +1,7 @@
 pkgname=decky-loader
-pkgver=3.2.9
+pkgver=3.2.10rc1
 _tag=v3.2.8-pre1
-pkgrel=2
+pkgrel=1
 pkgdesc='Plugin loader for the Steam Deck UI (native aarch64 build)'
 arch=(aarch64)
 url=https://github.com/SteamDeckHomebrew/decky-loader
