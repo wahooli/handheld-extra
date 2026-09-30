@@ -1,5 +1,5 @@
 pkgname=gamescope
-pkgver=20260927.97b1c0d0
+pkgver=20260930.3da45b97
 pkgrel=1
 pkgdesc='SteamOS session compositing window manager (OGC fork + armada handheld patches)'
 arch=(aarch64)
@@ -58,8 +58,8 @@ makedepends=(
   catch2
 )
 
-_ogcref=3.16.29-ogc2
-_ogccommit=4b50dd7a719c09acb1a0141ff6eac9dab1ab4f2f
+_ogcref=3.16.31-ogc1
+_ogccommit=afd6eac6e1b5045119831b63854bad68ec4fd92c
 source=(
   git+https://github.com/OpenGamingCollective/gamescope.git#commit=${_ogccommit}
   git+https://gitlab.freedesktop.org/emersion/libdisplay-info.git
