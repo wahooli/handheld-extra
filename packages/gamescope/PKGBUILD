@@ -1,5 +1,5 @@
 pkgname=gamescope
-pkgver=20261002.8eaeb555
+pkgver=20261003.9e6fe27a
 pkgrel=1
 pkgdesc='SteamOS session compositing window manager (OGC fork + armada handheld patches)'
 arch=(aarch64)
