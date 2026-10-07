@@ -1,7 +1,7 @@
 pkgname=inputplumber
-pkgver=0.79.0
-pkgrel=2
-_commit=1822d1e7cd319708c96b7f7b37b566c96c5de1d4
+pkgver=0.81.0
+pkgrel=1
+_commit=ea60d873cca17edd1cb655ede26f557108135252
 _appname=InputPlumber
 pkgdesc='Input router and remapper daemon for handheld gaming devices'
 arch=(aarch64)
