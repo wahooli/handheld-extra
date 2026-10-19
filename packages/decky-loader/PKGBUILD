@@ -1,5 +1,5 @@
 pkgname=decky-loader
-pkgver=3.3.0rc1
+pkgver=3.3.0
 _tag=v3.2.8-pre1
 pkgrel=1
 pkgdesc='Plugin loader for the Steam Deck UI (native aarch64 build)'
