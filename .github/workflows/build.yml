@@ -137,11 +137,19 @@ jobs:
             echo "Nothing was built — no package directory changed." >> "$GITHUB_STEP_SUMMARY"
           fi
 
+      - name: Bundle packages
+        if: ${{ !cancelled() }}
+        run: |
+          set -euo pipefail
+          if compgen -G 'out/*.pkg.tar.zst' > /dev/null; then
+            (cd out && tar -cf ../packages.tar ./*.pkg.tar.zst)
+          fi
+
       - uses: actions/upload-artifact@v7
         if: ${{ !cancelled() }}
         with:
           name: packages-${{ github.run_number }}
-          path: out/*.pkg.tar.zst
+          path: packages.tar
           retention-days: 14
           if-no-files-found: ignore
 
