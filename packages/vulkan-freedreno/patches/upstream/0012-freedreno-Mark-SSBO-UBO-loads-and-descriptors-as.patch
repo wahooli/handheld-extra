@@ -1,0 +1,156 @@
+From 043d5360838f7af883130d18febd71ad175ce42f Mon Sep 17 00:00:00 2001
+From: Connor Abbott <cwabbott0@gmail.com>
+Date: Thu, 21 May 2026 11:56:06 -0400
+Subject: [PATCH] freedreno: Mark SSBO/UBO loads and descriptors as
+ speculatable
+
+In preparation for no longer assuming this in core ir3.
+
+Part-of: <https://gitlab.freedesktop.org/mesa/mesa/-/merge_requests/42159>
+(cherry picked from mesa main commit 043d5360838f7af883130d18febd71ad175ce42f)
+---
+ .../drivers/freedreno/ir3/ir3_descriptor.c    | 43 ++++++++++++++++---
+ .../drivers/freedreno/ir3/ir3_descriptor.h    |  2 +-
+ .../drivers/freedreno/ir3/ir3_gallium.c       |  6 +--
+ 3 files changed, 39 insertions(+), 12 deletions(-)
+
+diff --git a/src/gallium/drivers/freedreno/ir3/ir3_descriptor.c b/src/gallium/drivers/freedreno/ir3/ir3_descriptor.c
+index 225f6ddc364..a3244fd8dfb 100644
+--- a/src/gallium/drivers/freedreno/ir3/ir3_descriptor.c
++++ b/src/gallium/drivers/freedreno/ir3/ir3_descriptor.c
+@@ -8,11 +8,32 @@
+ 
+ #include "ir3/ir3_descriptor.h"
+ 
++struct lower_io_state {
++   bool lower_to_bindless;
++};
++
+ static bool
+-lower_intrinsic(nir_builder *b, nir_intrinsic_instr *intr)
++lower_intrinsic(nir_builder *b, nir_intrinsic_instr *intr,
++                const struct lower_io_state *state)
+ {
+    unsigned desc_offset;
+ 
++   bool progress = false;
++   switch (intr->intrinsic) {
++   case nir_intrinsic_load_ubo:
++   case nir_intrinsic_load_ssbo:
++   case nir_intrinsic_get_ssbo_size:
++      nir_intrinsic_set_access(intr,
++                               nir_intrinsic_access(intr) | ACCESS_CAN_SPECULATE);
++      progress = true;
++      break;
++   default:
++      break;
++   }
++
++   if (!state->lower_to_bindless)
++      return progress;
++
+    switch (intr->intrinsic) {
+    case nir_intrinsic_load_ssbo:
+    case nir_intrinsic_store_ssbo:
+@@ -20,6 +41,7 @@ lower_intrinsic(nir_builder *b, nir_intrinsic_instr *intr)
+    case nir_intrinsic_ssbo_atomic_swap:
+    case nir_intrinsic_get_ssbo_size:
+       desc_offset = IR3_BINDLESS_SSBO_OFFSET;
++      progress = true;
+       break;
+    case nir_intrinsic_image_load:
+    case nir_intrinsic_image_store:
+@@ -28,9 +50,10 @@ lower_intrinsic(nir_builder *b, nir_intrinsic_instr *intr)
+    case nir_intrinsic_image_size:
+    case nir_intrinsic_image_samples:
+       desc_offset = IR3_BINDLESS_IMAGE_OFFSET;
++      progress = true;
+       break;
+    default:
+-      return false;
++      return progress;
+    }
+ 
+    unsigned buffer_src;
+@@ -53,7 +76,9 @@ lower_intrinsic(nir_builder *b, nir_intrinsic_instr *intr)
+     * can avoid the dmesg spam and users thinking this is a driver bug:
+     */
+    src = nir_umod_imm(b, src, IR3_BINDLESS_DESC_COUNT);
+-   nir_def *bindless = nir_bindless_resource_ir3(b, 32, src, set);
++   nir_def *bindless = nir_bindless_resource_ir3(b, 32, src,
++                                                 .desc_set = set,
++                                                 .access = ACCESS_CAN_SPECULATE);
+    nir_src_rewrite(&intr->src[buffer_src], bindless);
+ 
+    return true;
+@@ -65,17 +90,17 @@ lower_instr(nir_builder *b, nir_instr *instr, void *cb_data)
+    b->cursor = nir_before_instr(instr);
+    switch (instr->type) {
+    case nir_instr_type_intrinsic:
+-      return lower_intrinsic(b, nir_instr_as_intrinsic(instr));
++      return lower_intrinsic(b, nir_instr_as_intrinsic(instr), cb_data);
+    default:
+       return false;
+    }
+ }
+ 
+ /**
+- * Lower bindful image/SSBO to bindless
++ * Lower bindful image/SSBO to bindless and add CAN_SPECULATE.
+  */
+ bool
+-ir3_nir_lower_io_to_bindless(nir_shader *shader)
++ir3_nir_lower_io_gallium(nir_shader *shader, bool lower_to_bindless)
+ {
+    /* Note: We don't currently support API level bindless, as we assume we
+     * can remap bindful images/SSBOs to bindless while controlling the entire
+@@ -89,5 +114,9 @@ ir3_nir_lower_io_to_bindless(nir_shader *shader)
+     */
+    assert(!shader->info.uses_bindless);
+ 
+-   return nir_shader_instructions_pass(shader, lower_instr, nir_metadata_none, NULL);
++   struct lower_io_state state = {
++      .lower_to_bindless = lower_to_bindless,
++   };
++
++   return nir_shader_instructions_pass(shader, lower_instr, nir_metadata_none, &state);
+ }
+diff --git a/src/gallium/drivers/freedreno/ir3/ir3_descriptor.h b/src/gallium/drivers/freedreno/ir3/ir3_descriptor.h
+index 92df37cd909..797fb9c4a56 100644
+--- a/src/gallium/drivers/freedreno/ir3/ir3_descriptor.h
++++ b/src/gallium/drivers/freedreno/ir3/ir3_descriptor.h
+@@ -48,6 +48,6 @@ ir3_shader_descriptor_set(mesa_shader_stage shader)
+    }
+ }
+ 
+-bool ir3_nir_lower_io_to_bindless(nir_shader *shader);
++bool ir3_nir_lower_io_gallium(nir_shader *shader, bool lower_to_bindless);
+ 
+ #endif /* IR3_DESCRIPTOR_H_ */
+diff --git a/src/gallium/drivers/freedreno/ir3/ir3_gallium.c b/src/gallium/drivers/freedreno/ir3/ir3_gallium.c
+index 7eb3a6337b2..54b3878a32e 100644
+--- a/src/gallium/drivers/freedreno/ir3/ir3_gallium.c
++++ b/src/gallium/drivers/freedreno/ir3/ir3_gallium.c
+@@ -260,8 +260,7 @@ ir3_shader_compute_state_create(struct pipe_context *pctx,
+       nir = tgsi_to_nir(cso->prog, pctx->screen, false);
+    }
+ 
+-   if (ctx->screen->gen >= 6)
+-      ir3_nir_lower_io_to_bindless(nir);
++   ir3_nir_lower_io_gallium(nir, ctx->screen->gen >= 6 /* lower_to_bindless */);
+ 
+    struct ir3_shader *shader =
+       ir3_shader_from_nir(compiler, nir, &ir3_options);
+@@ -314,8 +313,7 @@ ir3_shader_state_create(struct pipe_context *pctx,
+       nir = tgsi_to_nir(cso->tokens, pctx->screen, false);
+    }
+ 
+-   if (ctx->screen->gen >= 6)
+-      ir3_nir_lower_io_to_bindless(nir);
++   ir3_nir_lower_io_gallium(nir, ctx->screen->gen >= 6 /* lower_to_bindless */);
+ 
+    enum ir3_wavesize_option api_wavesize = IR3_SINGLE_OR_DOUBLE;
+    enum ir3_wavesize_option real_wavesize = IR3_SINGLE_OR_DOUBLE;
+-- 
+2.55.0
+

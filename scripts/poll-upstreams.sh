@@ -20,7 +20,7 @@ BEHIND=(); ERRORS=(); BUMPED=(); TRACKED=(); ABIDRIFT=(); CHECKED=0
 
 for conf in packages/*/upstream.env; do
     pkg="$(basename "$(dirname "${conf}")")"
-    TRACK=; GITHUB_REPO=; GIT_URL=; OCI_IMAGE=; OCI_TAG_RE=; AUR_PKG=; CURRENT=; INCLUDE_PRERELEASE=
+    TRACK=; GITHUB_REPO=; GIT_URL=; GIT_BRANCH=; OCI_IMAGE=; OCI_TAG_RE=; AUR_PKG=; ALARM_REPO=; ALARM_PKG=; CURRENT=; INCLUDE_PRERELEASE=
     TRACK_PATHS=
     ABI_PIN_PKG=; ABI_PIN_REPO=; ABI_PIN_VAR=; ABI_PIN_AUTOBUMP=
     # shellcheck source=/dev/null
@@ -63,8 +63,10 @@ for conf in packages/*/upstream.env; do
         github-release) src="${GITHUB_REPO}" ;;
         github-paths)   src="${GITHUB_REPO} (${TRACK_PATHS})" ;;
         git-tag)        src="${GIT_URL}" ;;
+        git-branch)     src="${GIT_URL} (${GIT_BRANCH:-master})" ;;
         oci)            src="${OCI_IMAGE}" ;;
         aur)            src="aur/${AUR_PKG}" ;;
+        alarm)          src="ALARM ${ALARM_REPO:-extra}/${ALARM_PKG}" ;;
         *) ERRORS+=("${pkg}: unknown TRACK=${TRACK}"); continue ;;
     esac
 
@@ -107,6 +109,7 @@ for conf in packages/*/upstream.env; do
             github-paths) BEHIND+=("${pkg}|${CURRENT}|${latest}|https://github.com/${GITHUB_REPO}/commit/${latest}") ;;
             github-release) BEHIND+=("${pkg}|${CURRENT}|${latest}|https://github.com/${GITHUB_REPO}/releases/tag/${latest}") ;;
             aur) BEHIND+=("${pkg}|${CURRENT}|${latest}|https://aur.archlinux.org/packages/${AUR_PKG}") ;;
+            alarm) BEHIND+=("${pkg}|${CURRENT}|${latest}|https://archlinuxarm.org/packages/aarch64/${ALARM_PKG}") ;;
             *) BEHIND+=("${pkg}|${CURRENT}|${latest}|${src}") ;;
         esac
     fi

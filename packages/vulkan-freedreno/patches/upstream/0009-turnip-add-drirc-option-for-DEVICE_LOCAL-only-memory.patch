@@ -1,0 +1,54 @@
+From 30e8e9d6810b8dce727635ec4fc542d397574217 Mon Sep 17 00:00:00 2001
+From: Hugo223 <slimstalker@gmail.com>
+Date: Mon, 14 Sep 2026 22:47:33 +0500
+Subject: [PATCH] turnip: add drirc option for DEVICE_LOCAL-only memory type
+
+Add tu_expose_device_local_only_memory_type (default false). Some
+applications may unconditionally expect non-HOST_VISIBLE memory
+available, also its presence signals vkd3d-proton that device is
+non-UMA, which we may need to force for d3d12 traces compatibility
+purpose.
+
+Part-of: <https://gitlab.freedesktop.org/mesa/mesa/-/merge_requests/44388>
+(cherry picked from mesa main commit 30e8e9d6810b8dce727635ec4fc542d397574217)
+---
+ src/freedreno/vulkan/tu_device.cc    | 11 +++++++++++
+ src/freedreno/vulkan/tu_drirc_gen.py |  3 +++
+ 2 files changed, 14 insertions(+)
+
+diff --git a/src/freedreno/vulkan/tu_device.cc b/src/freedreno/vulkan/tu_device.cc
+index 263169fdb58..6c5d368a14a 100644
+--- a/src/freedreno/vulkan/tu_device.cc
++++ b/src/freedreno/vulkan/tu_device.cc
+@@ -1823,6 +1823,17 @@ tu_physical_device_init(struct tu_physical_device *device,
+       device->memory.type_count++;
+    }
+ 
++   /* We don't expose device local type by default to not be treated as
++    * non-UMA, e.g. vkd3d-proton considers GPU as UMA only when all memory
++    * types are HOST_VISIBLE. However, certain apps may unconditionally
++    * expect us having non-HOST_VISIBLE memory.
++    */
++   if (instance->drirc.misc.expose_device_local_only_memory_type) {
++      device->memory.types[device->memory.type_count] =
++         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
++      device->memory.type_count++;
++   }
++
+    device->memory.non_lazy_type_count = device->memory.type_count;
+    if (device->has_lazy_bos) {
+       device->memory.types[device->memory.type_count] =
+diff --git a/src/freedreno/vulkan/tu_drirc_gen.py b/src/freedreno/vulkan/tu_drirc_gen.py
+index 57e7c9ffa9b..7415da93525 100644
+--- a/src/freedreno/vulkan/tu_drirc_gen.py
++++ b/src/freedreno/vulkan/tu_drirc_gen.py
+@@ -96,6 +96,9 @@ def declare_options():
+         B("tu_override_uncached_as_cache_coherent", False,
+           "Replaces uncached-host allocations with cached-coherent-host when possible. Only useful under x86 emulation where memory accesses tend to be atomic",
+           c_name="override_uncached_as_cache_coherent"),
++        B("tu_expose_device_local_only_memory_type", False,
++          "Expose an extra DEVICE_LOCAL-only memory type. Some applications may unconditionally expect non-HOST_VISIBLE memory available, also its presence signals vkd3d-proton that device is non-UMA, which we may need to force for d3d12 traces compatibility purpose.",
++          c_name="expose_device_local_only_memory_type"),
+         B("tu_restrict_subgroup_size_64", False,
+           "Restrict subgroup size to 64 (instead of a max of 128) to work around games assuming desktop GPU 32/64 sizes",
+           c_name="restrict_subgroup_size_64"),

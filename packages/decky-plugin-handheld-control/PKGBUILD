@@ -1,11 +1,13 @@
 pkgname=decky-plugin-handheld-control
-pkgver=1.1.0
-pkgrel=2
+pkgver=1.11.1
+pkgrel=1
 pkgdesc='Decky plugin: fan curve, CPU clock pin, power profile and live thermals via org.handheld.Power1'
 arch=('aarch64')
 url='https://github.com/SteamDeckHomebrew/decky-loader'
 license=('GPL-2.0-or-later')
-depends=()
+depends=('python')
+optdepends=('lsfg-vk: frame generation tab'
+            'scx-tools: CPU scheduler switcher')
 makedepends=('nodejs' 'npm' 'pnpm')
 source=()
 sha256sums=()
@@ -36,5 +38,5 @@ package() {
     cp -a dist "${dest}/dist"
     rm -f "${dest}/dist/"*.map
 
-    install -d "${dest}/py_modules"
+    install -Dm0644 py_modules/lsfg_config.py -t "${dest}/py_modules/"
 }

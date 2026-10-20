@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-"""Validate the workflow files."""
 import glob
 import re
 import sys

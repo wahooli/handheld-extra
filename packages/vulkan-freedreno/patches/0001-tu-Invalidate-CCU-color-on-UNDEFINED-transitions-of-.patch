@@ -1,0 +1,26 @@
+From f92f6667938d9e9fb7c403f37dfb778d3f23fefb Mon Sep 17 00:00:00 2001
+From: Waltteri Hooli <1420194+wahooli@users.noreply.github.com>
+Date: Mon, 21 Sep 2026 17:17:01 +0300
+Subject: [PATCH 1/4] tu: Invalidate CCU color on UNDEFINED transitions of UBWC
+ images
+
+On UAV-UBWC hardware the UBWC flag cache can keep entries from an earlier
+image at the same memory, and the CCU clean on an UNDEFINED transition does
+not drop them. Request a CCU color invalidate there for UBWC images.
+---
+ src/freedreno/vulkan/tu_cmd_buffer.cc | 2 ++
+ 1 file changed, 2 insertions(+)
+
+diff --git a/src/freedreno/vulkan/tu_cmd_buffer.cc b/src/freedreno/vulkan/tu_cmd_buffer.cc
+index 6cf3050..c5475f0 100644
+--- a/src/freedreno/vulkan/tu_cmd_buffer.cc
++++ b/src/freedreno/vulkan/tu_cmd_buffer.cc
+@@ -10027,6 +10027,8 @@ tu_barrier(struct tu_cmd_buffer *cmd,
+                src_flags |= TU_ACCESS_CCU_DEPTH_INCOHERENT_WRITE;
+             } else {
+                src_flags |= TU_ACCESS_CCU_COLOR_INCOHERENT_WRITE;
++               if (image->layout[0].ubwc)
++                  dst_flags |= TU_ACCESS_CCU_COLOR_INCOHERENT_READ;
+             }
+          }
+          VkPipelineStageFlags2 sanitized_src_stage =

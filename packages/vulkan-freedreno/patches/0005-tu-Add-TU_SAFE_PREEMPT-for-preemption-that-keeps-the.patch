@@ -1,0 +1,77 @@
+From a3a0c266888a7d992026cf47f29ae00dbbb0fcf6 Mon Sep 17 00:00:00 2001
+From: Waltteri Hooli <1420194+wahooli@users.noreply.github.com>
+Date: Mon, 28 Sep 2026 11:08:56 +0300
+Subject: [PATCH] tu: Add TU_SAFE_PREEMPT for preemption that keeps the caches
+ clean
+
+TU_SAFE_PREEMPT=1 requests mid-submission preemption again and adds a CCU
+color, CCU depth and UCHE clean at every cache flush point, so a switch
+finds no unwritten data.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/freedreno/vulkan/tu_cmd_buffer.cc  |  5 +++++
+ src/freedreno/vulkan/tu_device.h       |  1 +
+ src/freedreno/vulkan/tu_knl_drm_msm.cc | 11 +++++++++--
+ 3 files changed, 15 insertions(+), 2 deletions(-)
+
+diff --git a/src/freedreno/vulkan/tu_cmd_buffer.cc b/src/freedreno/vulkan/tu_cmd_buffer.cc
+index 0f8607b..41cfdf4 100644
+--- a/src/freedreno/vulkan/tu_cmd_buffer.cc
++++ b/src/freedreno/vulkan/tu_cmd_buffer.cc
+@@ -500,6 +500,8 @@ tu_emit_cache_flush(struct tu_cmd_buffer *cmd_buffer)
+ {
+    struct tu_cs *cs = &cmd_buffer->cs;
+    struct tu_cache_state *cache = &cmd_buffer->state.cache;
++   cache->flush_bits |=
++      cmd_buffer->device->physical_device->safe_preemption_flush_bits;
+    BITMASK_ENUM(tu_cmd_flush_bits) flushes = cache->flush_bits;
+ 
+    tu6_emit_flushes<CHIP>(cmd_buffer, cs, cache);
+@@ -577,6 +579,9 @@ template <chip CHIP>
+ void
+ tu_emit_cache_flush_renderpass(struct tu_cmd_buffer *cmd_buffer)
+ {
++   cmd_buffer->state.renderpass_cache.flush_bits |=
++      cmd_buffer->device->physical_device->safe_preemption_flush_bits;
++
+    if (!cmd_buffer->state.renderpass_cache.flush_bits &&
+        likely(!tu_env.debug))
+       return;
+diff --git a/src/freedreno/vulkan/tu_device.h b/src/freedreno/vulkan/tu_device.h
+index 53799ce..5413803 100644
+--- a/src/freedreno/vulkan/tu_device.h
++++ b/src/freedreno/vulkan/tu_device.h
+@@ -146,6 +146,7 @@ struct tu_physical_device
+    struct fdl_ubwc_config ubwc_config;
+ 
+    bool has_preemption;
++   uint32_t safe_preemption_flush_bits;
+ 
+    bool expose_double_threadsize;
+ 
+diff --git a/src/freedreno/vulkan/tu_knl_drm_msm.cc b/src/freedreno/vulkan/tu_knl_drm_msm.cc
+index b4e6b16..77be6bd 100644
+--- a/src/freedreno/vulkan/tu_knl_drm_msm.cc
++++ b/src/freedreno/vulkan/tu_knl_drm_msm.cc
+@@ -1655,8 +1655,15 @@ tu_knl_drm_msm_load(struct tu_instance *instance,
+    device->has_raytracing = tu_drm_get_raytracing(device);
+    device->has_sparse_prr = tu_drm_get_prr(device);
+ 
+-   device->has_preemption = os_get_option("TU_ALLOW_PREEMPT") &&
+-                            tu_drm_has_preemption(device);
++   device->has_preemption =
++      (os_get_option("TU_ALLOW_PREEMPT") ||
++       debug_get_bool_option("TU_SAFE_PREEMPT", false)) &&
++      tu_drm_has_preemption(device);
++   if (device->has_preemption &&
++       debug_get_bool_option("TU_SAFE_PREEMPT", false))
++      device->safe_preemption_flush_bits = TU_CMD_FLAG_CCU_CLEAN_COLOR |
++                                           TU_CMD_FLAG_CCU_CLEAN_DEPTH |
++                                           TU_CMD_FLAG_CACHE_CLEAN;
+ 
+    device->is_perf_cntr_selectable = true;
+ 
+-- 
+2.55.0
+

@@ -1,0 +1,27 @@
+From f15336bb92bc369167f78692117d679cd4f3732f Mon Sep 17 00:00:00 2001
+From: Waltteri Hooli <1420194+wahooli@users.noreply.github.com>
+Date: Mon, 21 Sep 2026 17:41:09 +0300
+Subject: [PATCH] tu/autotune: Favour GMEM rendering in the bandwidth
+ comparison
+
+Drop the 10% weight on the GMEM bandwidth estimate so tiled rendering wins
+the comparison more often.
+
+Origin: https://github.com/WinNative-Emu/Drivers patches/apply_perf_variant.py and apply_balance_variant.py
+---
+ src/freedreno/vulkan/tu_autotune.cc | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/src/freedreno/vulkan/tu_autotune.cc b/src/freedreno/vulkan/tu_autotune.cc
+index e60329d..7dca46e 100644
+--- a/src/freedreno/vulkan/tu_autotune.cc
++++ b/src/freedreno/vulkan/tu_autotune.cc
+@@ -1028,7 +1028,7 @@ struct tu_autotune::rp_history {
+          /* Drawcalls access GMEM in GMEM rendering, but we do not want to ignore them completely.  The state changes
+           * between tiles also have an overhead.  The magic numbers of 11 and 10 are randomly chosen.
+           */
+-         gmem_bandwidth = (gmem_bandwidth * 11 + total_draw_call_bandwidth) / 10;
++         gmem_bandwidth = (gmem_bandwidth * 10 + total_draw_call_bandwidth) / 10;
+ 
+          bool select_sysmem = sysmem_bandwidth <= gmem_bandwidth;
+          render_mode mode = select_sysmem ? render_mode::SYSMEM : render_mode::GMEM;

@@ -1,0 +1,29 @@
+From f98021ee0c63afa0fde02b504652bd12dc6a8593 Mon Sep 17 00:00:00 2001
+From: Connor Abbott <cwabbott0@gmail.com>
+Date: Thu, 21 May 2026 12:09:39 -0400
+Subject: [PATCH] ir3: Mark driver UBO loads as speculatable
+
+These are always speculatable. In preparation for ir3 considering
+speculatability correctly.
+
+Part-of: <https://gitlab.freedesktop.org/mesa/mesa/-/merge_requests/42159>
+(cherry picked from mesa main commit f98021ee0c63afa0fde02b504652bd12dc6a8593)
+---
+ src/freedreno/ir3/ir3_nir.c | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/src/freedreno/ir3/ir3_nir.c b/src/freedreno/ir3/ir3_nir.c
+index 55503cf2655..f03c73cda56 100644
+--- a/src/freedreno/ir3/ir3_nir.c
++++ b/src/freedreno/ir3/ir3_nir.c
+@@ -90,6 +90,7 @@ load_driver_ubo(nir_builder *b, unsigned components, nir_def *ubo, unsigned offs
+ {
+    return nir_load_ubo(b, components, 32, ubo,
+                        nir_imm_int(b, offset * sizeof(uint32_t)),
++                       .access = ACCESS_CAN_SPECULATE,
+                        .align_mul = 16,
+                        .align_offset = (offset % 4) * sizeof(uint32_t),
+                        .range_base = offset * sizeof(uint32_t),
+-- 
+2.55.0
+

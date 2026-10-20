@@ -25,7 +25,6 @@ jobs:
           done
           echo "$(ls scripts/*.sh | wc -l) scripts parse"
 
-      # shellcheck is
       - name: Shellcheck
         run: |
           set -euo pipefail
@@ -109,7 +108,7 @@ jobs:
               || { echo "::error::packages/${p} has no upstream.env -- the poller would ignore it"; rc=1; continue; }
 
             # shellcheck disable=SC1090
-            ( TRACK=; GITHUB_REPO=; GIT_URL=; OCI_IMAGE=; OCI_TAG_RE=; AUR_PKG=; CURRENT=; TRACK_PATHS=
+            ( TRACK=; GITHUB_REPO=; GIT_URL=; GIT_BRANCH=; OCI_IMAGE=; OCI_TAG_RE=; AUR_PKG=; ALARM_REPO=; ALARM_PKG=; CURRENT=; TRACK_PATHS=
               . "${d}upstream.env"
               case "${TRACK}" in
                 none) ;;
@@ -129,9 +128,19 @@ jobs:
                 git-tag)
                   [ -n "${GIT_URL}" ] && [ -n "${CURRENT}" ] \
                     || { echo "::error::packages/${p}: TRACK=git-tag needs GIT_URL and CURRENT"; exit 1; } ;;
+                git-branch)
+                  [ -n "${GIT_URL}" ] && [ -n "${CURRENT}" ] \
+                    || { echo "::error::packages/${p}: TRACK=git-branch needs GIT_URL and CURRENT"; exit 1; }
+                  [[ "${CURRENT}" =~ ^[0-9a-f]{40}$ ]] \
+                    || { echo "::error::packages/${p}: TRACK=git-branch needs a full 40-char commit sha in CURRENT, got '${CURRENT}'"; exit 1; } ;;
                 aur)
                   [ -n "${AUR_PKG}" ] && [ -n "${CURRENT}" ] \
                     || { echo "::error::packages/${p}: TRACK=aur needs AUR_PKG and CURRENT"; exit 1; } ;;
+                alarm)
+                  [ -n "${ALARM_PKG}" ] && [ -n "${CURRENT}" ] \
+                    || { echo "::error::packages/${p}: TRACK=alarm needs ALARM_PKG and CURRENT"; exit 1; }
+                  [[ "${CURRENT}" =~ ^([0-9]+:)?[0-9][^-]*-[0-9]+(\.[0-9]+)?$ ]] \
+                    || { echo "::error::packages/${p}: TRACK=alarm needs CURRENT as the sync db spells it, [epoch:]pkgver-pkgrel, got '${CURRENT}'"; exit 1; } ;;
                 *)
                   echo "::error::packages/${p}: unknown TRACK='${TRACK}'"; exit 1 ;;
               esac ) || rc=1

@@ -1,0 +1,27 @@
+From b74909725a148327f4181af455210978e84f5399 Mon Sep 17 00:00:00 2001
+From: Waltteri Hooli <1420194+wahooli@users.noreply.github.com>
+Date: Mon, 21 Sep 2026 17:41:08 +0300
+Subject: [PATCH 2/4] freedreno: Disable early preamble and scalar predicates
+ on a7xx gen1
+
+Adreno 730/725 class GPUs misrender and hang with them.
+
+Origin: https://github.com/Weab-chan/freedreno_turnip-CI patches/a7xx_gen1_random_stuff.patch
+Also carried as: https://github.com/WinNative-Emu/Drivers patches/apply_a7xx_gen1_quirks.py
+---
+ src/freedreno/common/freedreno_devices.py | 2 ++
+ 1 file changed, 2 insertions(+)
+
+diff --git a/src/freedreno/common/freedreno_devices.py b/src/freedreno/common/freedreno_devices.py
+index 47791d6..f9b2173 100644
+--- a/src/freedreno/common/freedreno_devices.py
++++ b/src/freedreno/common/freedreno_devices.py
+@@ -842,6 +842,8 @@ a7xx_gen1 = GPUProps(
+         enable_tp_ubwc_flag_hint = True,
+         reading_shading_rate_requires_smask_quirk = True,
+         cs_lock_unlock_quirk = True,
++        has_early_preamble = False,
++        has_scalar_predicates = False,
+     )
+ 
+ a7xx_gen2 = GPUProps(

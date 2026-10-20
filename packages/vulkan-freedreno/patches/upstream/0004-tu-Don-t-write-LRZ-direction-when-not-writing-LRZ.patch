@@ -1,0 +1,34 @@
+From 74865282cf8eb12a9b4e1ce5d001c7fa7f04358e Mon Sep 17 00:00:00 2001
+From: Connor Abbott <cwabbott0@gmail.com>
+Date: Thu, 6 Aug 2026 11:55:14 -0400
+Subject: [PATCH] tu: Don't write LRZ direction when not writing LRZ
+
+If we don't enable LRZ, for example when Z write is disabled, then we
+shouldn't have to invalidate LRZ if the depth test direction changes. We
+should however still disable LRZ. The HW already has two separate bits
+here for using the direction and writing the direction, use them. Note
+that we should also be able to disable direction writing when LRZ write
+is disabled due to blending, but the HW doesn't like when
+GRAS_LRZ_CNTL::Z_WRITE_ENABLE is set but not GRAS_LRZ_CNTL::DIR_WRITE
+and hangs.
+
+Part-of: <https://gitlab.freedesktop.org/mesa/mesa/-/merge_requests/43540>
+(cherry picked from mesa main commit 74865282cf8eb12a9b4e1ce5d001c7fa7f04358e)
+---
+ src/freedreno/vulkan/tu_lrz.cc | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/src/freedreno/vulkan/tu_lrz.cc b/src/freedreno/vulkan/tu_lrz.cc
+index 604f79b4475..ce464cbe7d9 100644
+--- a/src/freedreno/vulkan/tu_lrz.cc
++++ b/src/freedreno/vulkan/tu_lrz.cc
+@@ -1195,7 +1195,8 @@ tu6_calculate_lrz_state(struct tu_cmd_buffer *cmd,
+    gras_lrz_cntl.z_write_enable = z_write_enable;
+    gras_lrz_cntl.z_bounds_enable = z_bounds_enable;
+    gras_lrz_cntl.fc_enable = cmd->state.lrz.fast_clear;
+-   gras_lrz_cntl.dir_write = cmd->state.lrz.gpu_dir_tracking;
++   gras_lrz_cntl.dir_write = cmd->state.lrz.gpu_dir_tracking &&
++      z_write_enable;
+    gras_lrz_cntl.disable_on_wrong_dir = cmd->state.lrz.gpu_dir_tracking;
+ 
+    if (CHIP >= A7XX)

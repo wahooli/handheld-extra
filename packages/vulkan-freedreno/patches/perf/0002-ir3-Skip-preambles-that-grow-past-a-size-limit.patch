@@ -1,0 +1,114 @@
+From 5e553d0d6648dbc5755a5590190e9bacd0476d19 Mon Sep 17 00:00:00 2001
+From: Waltteri Hooli <1420194+wahooli@users.noreply.github.com>
+Date: Tue, 29 Sep 2026 09:46:00 +0300
+Subject: [PATCH] ir3: Skip preambles that grow past a size limit
+
+Run opt_preamble on a clone and keep the preamble only when it has at most
+IR3_PREAMBLE_MAX_INSTRS NIR instructions (128 by default, a negative value
+disables the limit). The limit is part of the disk cache key.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/freedreno/ir3/ir3_disk_cache.c |  2 ++
+ src/freedreno/ir3/ir3_nir.c        | 52 +++++++++++++++++++++++++++++-
+ src/freedreno/ir3/ir3_nir.h        |  1 +
+ 3 files changed, 54 insertions(+), 1 deletion(-)
+
+diff --git a/src/freedreno/ir3/ir3_disk_cache.c b/src/freedreno/ir3/ir3_disk_cache.c
+index 3b732d3..a17b35f 100644
+--- a/src/freedreno/ir3/ir3_disk_cache.c
++++ b/src/freedreno/ir3/ir3_disk_cache.c
+@@ -48,6 +48,8 @@ ir3_disk_cache_init(struct ir3_compiler *compiler)
+    _mesa_blake3_update(&ctx, id_sha1, build_id_len);
+    _mesa_blake3_update(&ctx, &compiler->options.uche_trap_base,
+                      sizeof(compiler->options.uche_trap_base));
++   int64_t preamble_max_instrs = ir3_preamble_max_instrs();
++   _mesa_blake3_update(&ctx, &preamble_max_instrs, sizeof(preamble_max_instrs));
+    _mesa_blake3_final(&ctx, blake3);
+ 
+    char timestamp[BLAKE3_HEX_LEN];
+diff --git a/src/freedreno/ir3/ir3_nir.c b/src/freedreno/ir3/ir3_nir.c
+index 2f1690f..ea10d1e 100644
+--- a/src/freedreno/ir3/ir3_nir.c
++++ b/src/freedreno/ir3/ir3_nir.c
+@@ -1453,6 +1453,56 @@ ir3_nir_set_threadsize(struct ir3_shader_variant *v, const nir_shader *s)
+    }
+ }
+ 
++DEBUG_GET_ONCE_NUM_OPTION(preamble_max_instrs, "IR3_PREAMBLE_MAX_INSTRS", 128)
++
++int64_t
++ir3_preamble_max_instrs(void)
++{
++   return debug_get_option_preamble_max_instrs();
++}
++
++static unsigned
++preamble_instr_count(nir_shader *nir)
++{
++   nir_function_impl *entry = nir_shader_get_entrypoint(nir);
++   unsigned count = 0;
++
++   if (entry->preamble) {
++      nir_foreach_block (block, entry->preamble->impl) {
++         nir_foreach_instr (instr, block)
++            count++;
++      }
++   }
++
++   return count;
++}
++
++static bool
++opt_preamble_limited(nir_shader *s, struct ir3_shader_variant *so)
++{
++   int64_t max_instrs = ir3_preamble_max_instrs();
++
++   if (max_instrs < 0 || so->binning_pass)
++      return OPT(s, ir3_nir_opt_preamble, so);
++
++   struct ir3_const_allocations allocs = ir3_const_state_mut(so)->allocs;
++   nir_shader *clone = nir_shader_clone(NULL, s);
++   bool progress = ir3_nir_opt_preamble(clone, so);
++   unsigned count = progress ? preamble_instr_count(clone) : 0;
++   ralloc_free(clone);
++
++   if (!progress)
++      return false;
++
++   ir3_const_state_mut(so)->allocs = allocs;
++   if (count <= max_instrs)
++      return OPT(s, ir3_nir_opt_preamble, so);
++
++   ir3_const_alloc(&ir3_const_state_mut(so)->allocs, IR3_CONST_ALLOC_PREAMBLE,
++                   0, so->compiler->const_upload_unit);
++   return false;
++}
++
+ void
+ ir3_nir_lower_variant(struct ir3_shader_variant *so,
+                       const struct ir3_shader_nir_options *options,
+@@ -1610,7 +1660,7 @@ ir3_nir_lower_variant(struct ir3_shader_variant *so,
+     */
+    if (so->compiler->has_preamble &&
+        !(ir3_shader_debug & IR3_DBG_NOPREAMBLE))
+-      progress |= OPT(s, ir3_nir_opt_preamble, so);
++      progress |= opt_preamble_limited(s, so);
+ 
+    if (so->compiler->info->props.load_shader_consts_via_preamble)
+       progress |= OPT(s, ir3_nir_lower_driver_params_to_ubo, so);
+diff --git a/src/freedreno/ir3/ir3_nir.h b/src/freedreno/ir3/ir3_nir.h
+index 19355dd..89d6d22 100644
+--- a/src/freedreno/ir3/ir3_nir.h
++++ b/src/freedreno/ir3/ir3_nir.h
+@@ -108,6 +108,7 @@ bool ir3_nir_lower_const_global_loads(nir_shader *nir, struct ir3_shader_variant
+ bool ir3_nir_can_lower_to_ldg_k(nir_intrinsic_instr *intrin);
+ bool ir3_nir_fixup_load_const_ir3(nir_shader *nir);
+ bool ir3_nir_opt_preamble(nir_shader *nir, struct ir3_shader_variant *v);
++int64_t ir3_preamble_max_instrs(void);
+ bool ir3_nir_opt_prefetch_descriptors(nir_shader *nir, struct ir3_shader_variant *v);
+ bool ir3_nir_lower_preamble(nir_shader *nir, struct ir3_shader_variant *v);
+ 
+-- 
+2.55.0
+

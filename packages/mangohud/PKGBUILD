@@ -1,7 +1,7 @@
 _pkgname=MangoHud
 pkgname=mangohud
 pkgver=0.8.4
-pkgrel=6
+pkgrel=8
 pkgdesc='Vulkan overlay for FPS/temps/CPU-GPU load, plus mangoapp for gamescope'
 arch=('aarch64')
 url="https://github.com/flightlessmango/MangoHud"
@@ -15,11 +15,13 @@ conflicts=('mangoapp')
 source=("$pkgname-$pkgver.tar.xz::https://github.com/flightlessmango/MangoHud/releases/download/v$pkgver/$_pkgname-v$pkgver-Source.tar.xz"
         '0001-msm-report-adreno-gpu-metrics.patch'
         '0002-battery-match-power-supply-type-not-name.patch'
-        '0003-winesync-check-the-target-pid-not-our-own.patch')
+        '0003-winesync-check-the-target-pid-not-our-own.patch'
+        '0004-frame_gen-show-real-and-generated-frame-rate.patch')
 b2sums=('06bdfcd26e14ff544e4dea4e39b8f7da6119d87fc7e14f381cf8c47bba69508a4768b8584600424adb8ca2a2f6f4c2d84d63683addeb83bd0dd9a1e055febdb8'
         '11330716f9bbbb87d21e1f5d1f538ed0c55ee80b1c49668822a61e5eb7c48f6f3419e47c447542f9e0d320047dc77388c83af52fe551c70d1203562cdfd7ed4e'
         '96b4afce0d5cd6224e8b35187f25bc021b63117454c2bee6e80f6d26d57c5541c3ef9cd52cc91c63c0863345a34f9d4fe94def13cc43c7295bdf56779e3f3b7d'
-        '6eeab919838c2cfd775a88d5438ec76eda18d9b8da8ba84c7818eb5c68b5eb0a431c3ff4507b8374f504fd84440c1ad4ae39759ce2f573a0ee78da80d7ace2de')
+        '6eeab919838c2cfd775a88d5438ec76eda18d9b8da8ba84c7818eb5c68b5eb0a431c3ff4507b8374f504fd84440c1ad4ae39759ce2f573a0ee78da80d7ace2de'
+        '090094027b3f73eb1cb314b8f6e54ef3b098b6cf8efd607bc9ff2dbed53de590e4a43d2dabf526518faa777b6d0acf3044e12b239a17425d9fbcf577ae264de6')
 
 prepare() {
     cd "$_pkgname-v$pkgver"
@@ -32,6 +34,8 @@ prepare() {
     patch -Np1 -i "$srcdir/0002-battery-match-power-supply-type-not-name.patch"
 
     patch -Np1 -i "$srcdir/0003-winesync-check-the-target-pid-not-our-own.patch"
+
+    patch -Np1 -i "$srcdir/0004-frame_gen-show-real-and-generated-frame-rate.patch"
 }
 
 build() {
@@ -55,4 +59,15 @@ package() {
 
     [ -x "$pkgdir/usr/bin/mangoapp" ] \
         || { echo "PKGBUILD: mangoapp missing — was -Dmangoapp=true honoured?" >&2; return 1; }
+
+    local f
+    for f in usr/lib/mangohud/libMangoHud_probe.so \
+             usr/share/vulkan/implicit_layer.d/MangoHud_probe.aarch64.json \
+             etc/vulkan/implicit_layer.d/MangoHud_framegen_order.aarch64.json; do
+        [ -e "$pkgdir/$f" ] \
+            || { echo "PKGBUILD: $f missing — the frame_gen patch did not build in" >&2; return 1; }
+    done
+    nm -D --defined-only "$pkgdir/usr/lib/mangohud/libMangoHud_probe.so" | grep -v ' w ' \
+        | awk '{print $3}' | sort | diff - <(printf 'mangohud_probe_stats\nvkNegotiateLoaderLayerInterfaceVersion\n') \
+        || { echo "PKGBUILD: libMangoHud_probe.so exports more than expected" >&2; return 1; }
 }

@@ -1,0 +1,174 @@
+From cd6564aba7dfda24e14506eb75e31b8091b55083 Mon Sep 17 00:00:00 2001
+From: Connor Abbott <cwabbott0@gmail.com>
+Date: Wed, 10 Jun 2026 13:49:28 -0400
+Subject: [PATCH] ir3: Don't use early preamble when the preamble is not
+ speculatable
+
+The early preamble may execute even when no waves are launched, in which
+case the user is allowed to set arbitrary state since from the API point
+of view no invocations execute. This means that we cannot allow accesses
+that are not speculatable in early preambles, since they could cause
+faults. We've already plumbed through speculatability throughout ir3, so
+use it to disable early preamble when necessary.
+
+Part-of: <https://gitlab.freedesktop.org/mesa/mesa/-/merge_requests/42159>
+(cherry picked from mesa main commit cd6564aba7dfda24e14506eb75e31b8091b55083)
+---
+ src/freedreno/ir3/ir3.h              |  3 +-
+ src/freedreno/ir3/ir3_compiler_nir.c |  4 ++-
+ src/freedreno/ir3/ir3_legalize.c     |  5 +--
+ src/freedreno/ir3/ir3_nir.c          | 54 ++++++++++++++++++++++++++++
+ src/freedreno/ir3/ir3_nir.h          |  2 ++
+ src/freedreno/ir3/tests/delay.c      |  2 +-
+ 6 files changed, 65 insertions(+), 5 deletions(-)
+
+diff --git a/src/freedreno/ir3/ir3.h b/src/freedreno/ir3/ir3.h
+index b7337d36b8d..83035ce6e12 100644
+--- a/src/freedreno/ir3/ir3.h
++++ b/src/freedreno/ir3/ir3.h
+@@ -2299,7 +2299,8 @@ void ir3_ra_predicates(struct ir3_shader_variant *v);
+ bool ir3_lower_subgroups(struct ir3 *ir);
+ 
+ /* legalize: */
+-bool ir3_legalize(struct ir3 *ir, struct ir3_shader_variant *so, int *max_bary);
++bool ir3_legalize(struct ir3 *ir, struct ir3_shader_variant *so, int *max_bary,
++                  bool is_preamble_speculatable);
+ bool ir3_legalize_relative(struct ir3 *ir);
+ 
+ static inline bool
+diff --git a/src/freedreno/ir3/ir3_compiler_nir.c b/src/freedreno/ir3/ir3_compiler_nir.c
+index de75c02bf88..18c587856ce 100644
+--- a/src/freedreno/ir3/ir3_compiler_nir.c
++++ b/src/freedreno/ir3/ir3_compiler_nir.c
+@@ -5803,6 +5803,8 @@ ir3_compile_shader_nir(struct ir3_compiler *compiler,
+       goto out;
+    }
+ 
++   bool is_preamble_speculatable = ir3_nir_is_preamble_speculatable(ctx->s);
++
+    emit_instructions(ctx);
+ 
+    if (ctx->error) {
+@@ -6191,7 +6193,7 @@ ir3_compile_shader_nir(struct ir3_compiler *compiler,
+    /* We need to do legalize after (for frag shader's) the "bary.f"
+     * offsets (inloc) have been assigned.
+     */
+-   IR3_PASS(ir, ir3_legalize, so, &max_bary);
++   IR3_PASS(ir, ir3_legalize, so, &max_bary, is_preamble_speculatable);
+ 
+    if (ctx->compiler->info->props.cs_lock_unlock_quirk && ir3_shader_compute(so)) {
+       struct ir3_instruction *end = ir3_find_end(so->ir);
+diff --git a/src/freedreno/ir3/ir3_legalize.c b/src/freedreno/ir3/ir3_legalize.c
+index 02c3812264a..b316b2b2966 100644
+--- a/src/freedreno/ir3/ir3_legalize.c
++++ b/src/freedreno/ir3/ir3_legalize.c
+@@ -2454,7 +2454,8 @@ align_aliases(struct ir3 *ir)
+ }
+ 
+ bool
+-ir3_legalize(struct ir3 *ir, struct ir3_shader_variant *so, int *max_bary)
++ir3_legalize(struct ir3 *ir, struct ir3_shader_variant *so, int *max_bary,
++             bool can_speculate_preamble)
+ {
+    struct ir3_legalize_ctx *ctx = rzalloc(ir, struct ir3_legalize_ctx);
+    bool progress;
+@@ -2534,7 +2535,7 @@ ir3_legalize(struct ir3 *ir, struct ir3_shader_variant *so, int *max_bary)
+       }
+    }
+ 
+-   so->early_preamble = has_preamble && !gpr_in_preamble &&
++   so->early_preamble = can_speculate_preamble && has_preamble && !gpr_in_preamble &&
+       !pred_in_preamble && !relative_in_preamble &&
+       ir->compiler->info->props.has_early_preamble &&
+       !(ir3_shader_debug & IR3_DBG_NOEARLYPREAMBLE);
+diff --git a/src/freedreno/ir3/ir3_nir.c b/src/freedreno/ir3/ir3_nir.c
+index f03c73cda56..2f1690f6cd9 100644
+--- a/src/freedreno/ir3/ir3_nir.c
++++ b/src/freedreno/ir3/ir3_nir.c
+@@ -2097,3 +2097,57 @@ ir3_nir_get_global_offset(nir_builder *b, struct ir3_compiler *compiler,
+       .shift = offset_shift,
+    };
+ }
++
++/* Early preamble may execute even if no shader invocations are dynamically
++ * executed. In order for this to be safe, every instruction must be
++ * speculatable, i.e. it cannot cause faults no matter what data the user throws
++ * at it. Generally this means descriptors are in-bounds and (if loading from
++ * descriptors) they contain valid data.
++ */
++
++bool
++ir3_nir_is_preamble_speculatable(nir_shader *s)
++{
++   nir_function_impl *entrypoint = nir_shader_get_entrypoint(s);
++
++   bool in_preamble = false;
++   nir_foreach_block (block, entrypoint) {
++      nir_foreach_instr (instr, block) {
++         if (instr->type != nir_instr_type_intrinsic)
++            continue;
++
++         nir_intrinsic_instr *intrin = nir_instr_as_intrinsic(instr);
++
++         if (intrin->intrinsic == nir_intrinsic_preamble_start_ir3) {
++            in_preamble = true;
++            continue;
++         }
++
++         /* We've reached the end of the preamble without finding a
++          * non-speculatable instruction.
++          */
++         if (intrin->intrinsic == nir_intrinsic_preamble_end_ir3)
++            return true;
++
++         /* As a special case, copy_push_const_to_uniform isn't marked
++          * can_reorder but it's speculatable anyway. We don't currently have
++          * a way to mark always-speculatable-but-not-reorderable intrinsics.
++          * Ignore elect_any_ir3 as it can only be part of the scaffolding we
++          * emit for the preamble.
++          */
++         if (intrin->intrinsic == nir_intrinsic_copy_push_const_to_uniform_ir3 ||
++             intrin->intrinsic == nir_intrinsic_elect_any_ir3)
++            continue;
++
++         /* Ignore anything outside the preamble. */
++         if (!in_preamble)
++            continue;
++
++         if (nir_intrinsic_has_access(intrin) &&
++             !(nir_intrinsic_access(intrin) & ACCESS_CAN_SPECULATE))
++            return false;
++      }
++   }
++
++   return true;
++}
+diff --git a/src/freedreno/ir3/ir3_nir.h b/src/freedreno/ir3/ir3_nir.h
+index 8065121b059..19355dd24c4 100644
+--- a/src/freedreno/ir3/ir3_nir.h
++++ b/src/freedreno/ir3/ir3_nir.h
+@@ -226,6 +226,8 @@ ir3_nir_is_prefetchable(nir_intrinsic_instr *intr)
+       (nir_intrinsic_access(intr) & ACCESS_CAN_SPECULATE);
+ }
+ 
++bool ir3_nir_is_preamble_speculatable(nir_shader *s);
++
+ ENDC;
+ 
+ #endif /* IR3_NIR_H_ */
+diff --git a/src/freedreno/ir3/tests/delay.c b/src/freedreno/ir3/tests/delay.c
+index 516bd414f66..f955f6472cb 100644
+--- a/src/freedreno/ir3/tests/delay.c
++++ b/src/freedreno/ir3/tests/delay.c
+@@ -184,7 +184,7 @@ main(int argc, char **argv)
+       }
+ 
+       int max_bary;
+-      ir3_legalize(ir, shader->variants, &max_bary);
++      ir3_legalize(ir, shader->variants, &max_bary, false);
+ 
+       unsigned n = calc_nops(block, last);
+ 
+-- 
+2.55.0
+

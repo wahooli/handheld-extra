@@ -5,14 +5,20 @@ import {
   ButtonItem,
   SliderField,
   ToggleField,
+  DialogButton,
+  Focusable,
+  Router,
   staticClasses,
 } from "@decky/ui";
 import { callable, definePlugin } from "@decky/api";
 import { useEffect, useRef, useState } from "react";
 import { FaFan } from "react-icons/fa";
+import { FrameGenTab, lsfgStatus, syncFrameCap } from "./lsfg";
+import { GameLaunchSettings } from "./compat";
+import { GameTuning, PowerTuning } from "./tuning";
+import { SystemTab, settingsStatus } from "./system";
+import { launchOptionsOf, readTweaks } from "./launchOptions";
 
-// Mirrors the dict handheld-powerd's GetStatus returns. Only the fields this
-// panel renders are declared; the CLI emits more.
 interface Status {
   Profile?: string;
   ProfileLabel?: string;
@@ -38,6 +44,17 @@ interface Status {
 interface StatusReply { ok: boolean; error?: string; status?: Status }
 interface OptionsReply { ok: boolean; profiles: string[]; fanCurves: string[] }
 interface WriteReply { ok: boolean; error?: string }
+interface GameReply { ok: boolean; enabled: boolean }
+interface RunningGame { appid: string; name: string; enabled: boolean }
+interface SchedulerReply {
+  ok: boolean;
+  error?: string;
+  available: boolean;
+  current?: string;
+  mode?: string;
+  domain?: string;
+  schedulers?: string[];
+}
 
 const getStatus = callable<[], StatusReply>("get_status");
 const getOptions = callable<[], OptionsReply>("get_options");
@@ -45,59 +62,141 @@ const setProfile = callable<[name: string], WriteReply>("set_profile");
 const setFanCurve = callable<[name: string], WriteReply>("set_fan_curve");
 const setCpu = callable<[value: string], WriteReply>("set_cpu");
 const reloadConfig = callable<[], WriteReply>("reload_config");
+const getGame = callable<[appid: string], GameReply>("get_game");
+const setGameEnabled = callable<[appid: string, name: string, enabled: boolean], WriteReply>(
+  "set_game_enabled",
+);
+const gameStarted = callable<[appid: string, cores: string], WriteReply>("game_started");
+const gameStopped = callable<[appid: string], WriteReply>("game_stopped");
+const syncRunning = callable<[appid: string, cores: string], WriteReply>("sync_running");
+const getScheduler = callable<[], SchedulerReply>("scx_status");
+const setScheduler = callable<[name: string], WriteReply>("scx_set");
 
-// The panel polls rather than subscribing. handheld-powerd does emit
-// PropertiesChanged, but the loader has no D-Bus bridge to forward it, and
-// temperature/PWM change continuously anyway — there is no edge to subscribe to.
-// 2s matches the daemon's own fan tick, so the numbers shown are never staler
-// than one control cycle.
 const POLL_MS = 2000;
 
-// "profile" is the CLI's word for "clear the override and follow the active
-// power profile". Not an empty string: an empty CLI argument is
-// indistinguishable from no argument at all.
 const FOLLOW_PROFILE = "profile";
 
-// The CPU slider writes on a delay. Every step of a drag fires onChange, and
-// each write is a D-Bus round trip that re-pins every cpufreq policy — so
-// writing per step would pin the CPU to a dozen frequencies on the way to the
-// one the user wanted. Long enough to coalesce a drag, short enough that
-// releasing the stick feels like it took effect.
+const KERNEL_SCHEDULER = "";
+
+const schedulerLabel = (name: string) => {
+  const short = name.replace(/^scx_/, "");
+  return short[0].toUpperCase() + short.slice(1);
+};
+
 const PIN_DEBOUNCE_MS = 400;
 
-// Slider granularity. cpufreq operating points are neither evenly spaced nor
-// the same on both clusters, so there is no step size that lands on real ones;
-// the daemon snaps each policy DOWN to its own table instead, which means the
-// number here is a ceiling that holds rather than a frequency that exists.
-// 100 MHz keeps the labels readable and the dpad usable.
 const PIN_STEP_MHZ = 100;
 
-// Round the slider ends outwards to whole steps. The daemon clamps anything
-// outside the real range back into it, so overshooting at both ends costs
-// nothing and buys round numbers plus a top notch that can actually reach the
-// SoC's fastest operating point (4300.8 MHz is not 4300).
 const floorStep = (mhz: number) => Math.floor(mhz / PIN_STEP_MHZ) * PIN_STEP_MHZ;
 const ceilStep = (mhz: number) => Math.ceil(mhz / PIN_STEP_MHZ) * PIN_STEP_MHZ;
 
+type Tab = "performance" | "framegen" | "system";
+
+const TABS: { id: Tab; label: string; short: string }[] = [
+  { id: "performance", label: "Performance", short: "Performance" },
+  { id: "system", label: "System", short: "System" },
+  { id: "framegen", label: "Frame generation", short: "Frame gen" },
+];
+
+let lastTab: Tab = "performance";
+
 function Content() {
+  const [lsfgInstalled, setLsfgInstalled] = useState(false);
+  const [settingsAvailable, setSettingsAvailable] = useState(false);
+  const [tab, setTab] = useState<Tab>(lastTab);
+
+  useEffect(() => {
+    let live = true;
+    void lsfgStatus().then((reply) => {
+      if (live) setLsfgInstalled(reply.ok && Boolean(reply.installed));
+    });
+    void settingsStatus().then((reply) => {
+      if (live) setSettingsAvailable(reply.ok);
+    });
+    return () => {
+      live = false;
+    };
+  }, []);
+
+  const choose = (next: Tab) => {
+    lastTab = next;
+    setTab(next);
+  };
+
+  const tabs = TABS.filter(({ id }) => (id !== "framegen" || lsfgInstalled) && (id !== "system" || settingsAvailable));
+  const active: Tab = tabs.some(({ id }) => id === tab) ? tab : "performance";
+
+  return (
+    <>
+      {tabs.length > 1 && (
+        <PanelSection>
+          <PanelSectionRow>
+            <Focusable style={{ display: "flex", gap: "6px" }} flow-children="horizontal">
+              {tabs.map(({ id, label, short }) => (
+                <DialogButton
+                  key={id}
+                  style={{
+                    flex: 1,
+                    minWidth: 0,
+                    padding: "6px 4px",
+                    fontSize: "0.85em",
+                    opacity: active === id ? 1 : 0.55,
+                  }}
+                  onClick={() => choose(id)}
+                >
+                  {tabs.length > 2 ? short : label}
+                </DialogButton>
+              ))}
+            </Focusable>
+          </PanelSectionRow>
+        </PanelSection>
+      )}
+      {active === "performance" && <PerformanceTab />}
+      {active === "framegen" && <FrameGenTab />}
+      {active === "system" && <SystemTab />}
+    </>
+  );
+}
+
+function PerformanceTab() {
   const [status, setStatus] = useState<Status | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [profiles, setProfiles] = useState<string[]>([]);
   const [fanCurves, setFanCurves] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
-  // The slider's own value, so a drag is not fought by the 2s poll. Null until
-  // the user touches it, at which point local state wins until the next mount.
   const [pinMhz, setPinMhz] = useState<number | null>(null);
+  const [game, setGame] = useState<RunningGame | null>(null);
+  const [scheduler, setSchedulerState] = useState<SchedulerReply | null>(null);
+  const [schedulerError, setSchedulerError] = useState<string | null>(null);
   const pinTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const schedulerWanted = useRef(true);
+
+  const refreshGame = async () => {
+    const app = Router.MainRunningApp;
+    if (!app) {
+      setGame(null);
+      return;
+    }
+    const reply = await getGame(String(app.appid));
+    setGame({ appid: String(app.appid), name: app.display_name, enabled: reply.ok && reply.enabled });
+  };
+
+  const refreshScheduler = async () => {
+    if (!schedulerWanted.current) return;
+    const reply = await getScheduler();
+    schedulerWanted.current = reply.available;
+    setSchedulerState(reply);
+  };
 
   const refresh = async () => {
-    const reply = await getStatus();
+    const [reply] = await Promise.all([getStatus(), refreshScheduler()]);
     if (reply.ok && reply.status) {
       setStatus(reply.status);
       setError(null);
     } else {
       setError(reply.error ?? "unknown error");
     }
+    await refreshGame();
   };
 
   useEffect(() => {
@@ -113,16 +212,17 @@ function Content() {
     return () => {
       live = false;
       clearInterval(timer);
-      // A pending pin must not fire into an unmounted panel — the write itself
-      // would still land, which is worse than dropping it: the user closed the
-      // panel at whatever value they were looking at.
       if (pinTimer.current) clearTimeout(pinTimer.current);
     };
   }, []);
 
-  // Writes are serialised behind `busy` and followed by an immediate refresh:
-  // the daemon applies synchronously, so waiting for the next poll would make a
-  // dropdown appear to snap back to its old value for up to POLL_MS.
+  const reloadOptions = async () => {
+    const opts = await getOptions();
+    setProfiles(opts.profiles ?? []);
+    setFanCurves(opts.fanCurves ?? []);
+    await refresh();
+  };
+
   const write = async (fn: () => Promise<WriteReply>) => {
     setBusy(true);
     try {
@@ -134,8 +234,17 @@ function Content() {
     }
   };
 
-  // Deliberately not wrapped in `write`: that sets `busy`, and disabling the
-  // control that is mid-drag is the one thing a debounced slider must not do.
+  const chooseScheduler = async (name: string) => {
+    setBusy(true);
+    try {
+      const reply = await setScheduler(name);
+      setSchedulerError(reply.ok ? null : reply.error || "switch failed");
+      await refreshScheduler();
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const queuePin = (mhz: number) => {
     setPinMhz(mhz);
     if (pinTimer.current) clearTimeout(pinTimer.current);
@@ -177,26 +286,40 @@ function Content() {
     { data: FOLLOW_PROFILE, label: "Follow power profile" },
     ...fanCurves.map((c) => ({ data: c, label: c[0].toUpperCase() + c.slice(1) })),
   ];
-  // The dropdown shows what is actually in force. When no override is set that
-  // is the profile's curve, so select the "follow" entry rather than the curve
-  // name — otherwise switching power profile would silently look like the user
-  // had pinned a curve.
   const selectedCurve =
     status.FanCurveSource === "override" ? status.FanCurve ?? FOLLOW_PROFILE : FOLLOW_PROFILE;
 
   const pinLow = floorStep(status.ManualCpuClockMin ?? 0);
   const pinHigh = ceilStep(status.ManualCpuClockMax ?? 0);
   const pinned = status.CpuPerformanceLevel === "manual";
-  // What the slider shows: the user's uncommitted drag, else the clock the
-  // daemon has stored, else the ceiling already in force. Starting from the
-  // ceiling rather than the top of the range matters — flipping the toggle on
-  // then leaving it alone keeps the speed the profile was already allowing,
-  // instead of pinning every cluster to the SoC maximum and staying there
-  // across a reboot.
   const pinValue = pinMhz ?? (status.ManualCpuClock || status.CpuMaxMhz || pinHigh);
+  const perGame = scheduler?.available
+    ? "CPU pin, fan curve and CPU scheduler"
+    : "CPU pin and fan curve";
 
   return (
     <PanelSection title="Handheld Control">
+      {game && (
+        <PanelSectionRow>
+          <ToggleField
+            label="Use per-game profile"
+            description={
+              game.enabled
+                ? `${perGame} follow ${game.name}`
+                : `${perGame} are shared by all games`
+            }
+            checked={game.enabled}
+            disabled={busy}
+            onChange={(on) =>
+              write(() => {
+                setPinMhz(null);
+                return setGameEnabled(game.appid, game.name, on);
+              })
+            }
+          />
+        </PanelSectionRow>
+      )}
+
       {profiles.length > 0 && (
         <PanelSectionRow>
           <DropdownItem
@@ -213,10 +336,6 @@ function Content() {
         </PanelSectionRow>
       )}
 
-      {/* The control the Deck UI has no concept of at all. `auto` is the power
-          profile's clamp and governor; the pin holds scaling_min_freq and
-          scaling_max_freq on one operating point per cluster, which is the only
-          way to stop a game's frame pacing moving with the governor. */}
       {status.HasCpuFreq && pinHigh > 0 && (
         <>
           <PanelSectionRow>
@@ -250,8 +369,39 @@ function Content() {
         </>
       )}
 
-      {/* Hidden entirely when the device has no fan — qemu-virt, and any
-          passively cooled handheld. An empty dropdown would be worse than none. */}
+      {scheduler?.available && scheduler.ok && (
+        <PanelSectionRow>
+          <DropdownItem
+            label="CPU scheduler"
+            description={
+              scheduler.current
+                ? scheduler.domain
+                  ? `sched_ext: ${scheduler.current}, other work on cores ${scheduler.domain}`
+                  : `sched_ext: ${scheduler.current}, ${scheduler.mode} mode`
+                : "Kernel default (EEVDF)"
+            }
+            rgOptions={[
+              { data: KERNEL_SCHEDULER, label: "Kernel default" },
+              ...(scheduler.schedulers ?? []).map((s) => ({ data: s, label: schedulerLabel(s) })),
+            ]}
+            selectedOption={scheduler.current ?? KERNEL_SCHEDULER}
+            disabled={busy}
+            onChange={(opt) => void chooseScheduler(opt.data as string)}
+          />
+        </PanelSectionRow>
+      )}
+
+      {scheduler?.available && (scheduler.ok ? schedulerError : scheduler.error) && (
+        <PanelSectionRow>
+          <div style={{ fontSize: "0.8em", color: "#ff6b6b" }}>
+            CPU scheduler: {scheduler.ok ? schedulerError : scheduler.error}
+          </div>
+        </PanelSectionRow>
+      )}
+
+      {game && <GameLaunchSettings game={game} />}
+      {game && <GameTuning game={game} />}
+
       {status.HasFan && fanCurves.length > 0 && (
         <PanelSectionRow>
           <DropdownItem
@@ -280,8 +430,6 @@ function Content() {
           ) : (
             <div>Fan: none detected</div>
           )}
-          {/* Each cluster snapped to its own table, so this is where the pin
-              actually landed — usually below the slider's number. */}
           {status.HasCpuFreq && (
             <div>
               CPU: {status.CpuClockMhz ?? 0} MHz ({status.CpuPerformanceLevel})
@@ -302,8 +450,12 @@ function Content() {
         </PanelSectionRow>
       )}
 
-      {/* Picks up hand edits to /etc/handheld/power-profiles.conf without a
-          reboot, which is the whole point of that file being user-editable. */}
+      <PowerTuning
+        profile={status.Profile ?? ""}
+        fanCurve={status.FanCurve ?? ""}
+        onChanged={() => void reloadOptions()}
+      />
+
       <PanelSectionRow>
         <ButtonItem
           layout="below"
@@ -317,10 +469,40 @@ function Content() {
   );
 }
 
-export default definePlugin(() => ({
-  name: "Handheld Control",
-  titleView: <div className={staticClasses.Title}>Handheld Control</div>,
-  content: <Content />,
-  icon: <FaFan />,
-  onDismount() {},
-}));
+const coresOf = async (appid: string) => {
+  const options = await launchOptionsOf(Number(appid));
+  return options === null ? "" : readTweaks(options).cores;
+};
+
+export default definePlugin(() => {
+  const running = Router.MainRunningApp;
+  const runningId = running ? String(running.appid) : "";
+  void (async () => syncRunning(runningId, runningId ? await coresOf(runningId) : ""))();
+  const stoppedAt = new Map<string, number>();
+  const lifetime = SteamClient.GameSessions.RegisterForAppLifetimeNotifications((n) => {
+    const appid = String(n.unAppID);
+    if (!n.bRunning) {
+      stoppedAt.set(appid, Date.now());
+      void gameStopped(appid);
+      return;
+    }
+    const started = Date.now();
+    void coresOf(appid).then((cores) => {
+      if ((stoppedAt.get(appid) ?? 0) < started) void gameStarted(appid, cores);
+    });
+  });
+  const actions = SteamClient.Apps.RegisterForGameActionStart((_action, appid) => {
+    void syncFrameCap(appid);
+  });
+
+  return {
+    name: "Handheld Control",
+    titleView: <div className={staticClasses.Title}>Handheld Control</div>,
+    content: <Content />,
+    icon: <FaFan />,
+    onDismount() {
+      lifetime.unregister();
+      actions.unregister();
+    },
+  };
+});

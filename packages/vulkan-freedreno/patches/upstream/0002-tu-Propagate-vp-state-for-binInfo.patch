@@ -1,0 +1,30 @@
+From 3a475cd2287b2d1adad48409f75f517b91dfe2ad Mon Sep 17 00:00:00 2001
+From: Karmjit Mahil <karmjit.mahil@igalia.com>
+Date: Wed, 15 Jul 2026 15:52:03 +0100
+Subject: [PATCH] tu: Propagate vp state for binInfo
+
+Propagate vp state on suspend/resume otherwise we were incorrectly
+ending up with 0 vp and sc count in binInfo.
+
+Signed-off-by: Karmjit Mahil <karmjit.mahil@igalia.com>
+Part-of: <https://gitlab.freedesktop.org/mesa/mesa/-/merge_requests/42985>
+(cherry picked from mesa main commit 3a475cd2287b2d1adad48409f75f517b91dfe2ad)
+---
+ src/freedreno/vulkan/tu_cmd_buffer.cc | 4 ++++
+ 1 file changed, 4 insertions(+)
+
+diff --git a/src/freedreno/vulkan/tu_cmd_buffer.cc b/src/freedreno/vulkan/tu_cmd_buffer.cc
+index dbbb0d70f05..cbd8f7843cc 100644
+--- a/src/freedreno/vulkan/tu_cmd_buffer.cc
++++ b/src/freedreno/vulkan/tu_cmd_buffer.cc
+@@ -6215,6 +6215,10 @@ tu_restore_suspended_pass(struct tu_cmd_buffer *cmd,
+    cmd->state.tiling = tu_framebuffer_get_tiling_config(cmd->state.framebuffer, cmd->device, cmd->state.pass,
+                                                         cmd->state.gmem_layout, cmd->state.gmem_layout_divisor);
+    cmd->state.lrz = suspended->state.suspended_pass.lrz;
++
++#ifdef HAVE_PERFETTO
++   cmd->vk.dynamic_graphics_state.vp = suspended->vk.dynamic_graphics_state.vp;
++#endif
+ }
+ 
+ /* Take the saved pre-chain in "secondary" and copy its commands to "cmd",

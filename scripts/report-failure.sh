@@ -24,10 +24,13 @@ Common causes here, in rough order of likelihood:
 - **An upstream moved and the PKGBUILD did not.** These packages track other
   people's releases; a changed tarball checksum or a renamed source is the usual
   reason a package that built last week stops building.
-- **A patch stopped applying.** \`gamescope\` and \`wvkbd\` carry patches. For
-  gamescope the source ref and the patch set are resolved from ONE armada
-  commit, so they cannot drift apart; a failure there usually means armada
-  added a patch targeting a path this build does not present the same way.
+- **A patch stopped applying.** \`gamescope\`, \`inputplumber\`,
+  \`umtp-responder\`, \`mangohud\`, \`wvkbd\` and \`vulkan-freedreno\` carry
+  patches. For gamescope the source ref and the patch set are resolved from ONE
+  armada commit, so they cannot drift apart; a failure there usually means
+  armada added a patch targeting a path this build does not present the same
+  way. \`vulkan-freedreno\` follows ALARM's mesa release; while its patch does
+  not apply, devices simply keep ALARM's driver, so this one is never urgent.
 - **A new makedepend.** \`makepkg --syncdeps\` installs them, so this shows up as
   a missing-package error rather than a compile error.
 BODY

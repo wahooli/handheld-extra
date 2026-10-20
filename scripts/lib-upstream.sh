@@ -41,6 +41,10 @@ upstream_latest() {
                 | awk '{print $2}' | normalise \
                 | grep -E '^[0-9]+(\.[0-9]+)*$' | sort -V | tail -1
             ;;
+        git-branch)
+            git ls-remote "${GIT_URL}" "refs/heads/${GIT_BRANCH:-master}" 2>/dev/null \
+                | awk 'NR == 1 { print $1 }'
+            ;;
         oci)
             oci_latest_tag "${OCI_IMAGE}" "${OCI_TAG_RE:-.}"
             ;;
@@ -49,6 +53,9 @@ upstream_latest() {
             ;;
         aur)
             aur_pkg_version "${AUR_PKG}"
+            ;;
+        alarm)
+            alarm_pkg_fullversion "${ALARM_REPO:-extra}" "${ALARM_PKG}"
             ;;
         *) return 1 ;;
     esac
@@ -68,6 +75,20 @@ github_paths_commit() {
     done
     [ -n "${best_sha}" ] || return 1
     printf '%s' "${best_sha}"
+}
+
+git_commit_date() {
+    local url="$1" sha="$2" tmp date
+    tmp="$(mktemp -d)" || return 1
+    git init -q "${tmp}" 2>/dev/null || { rm -rf "${tmp}"; return 1; }
+    if ! git -C "${tmp}" fetch -q --depth=1 "${url}" "${sha}" 2>/dev/null; then
+        git -C "${tmp}" fetch -q --depth=1 "${url}" "refs/heads/${GIT_BRANCH:-master}" 2>/dev/null \
+            || { rm -rf "${tmp}"; return 1; }
+    fi
+    date="$(git -C "${tmp}" log -1 --format=%cd --date=format:%Y%m%d "${sha}" 2>/dev/null)" || date=
+    rm -rf "${tmp}"
+    [ -n "${date}" ] || return 1
+    printf '%s' "${date}"
 }
 
 github_commit_date() {
@@ -111,8 +132,8 @@ repo_file_value() {
 
 _ALARM_DB_DIR=
 
-alarm_pkg_version() {
-    local repo="$1" name="$2" db entry ver
+alarm_pkg_fullversion() {
+    local repo="$1" name="$2" db entry
     [ -n "${_ALARM_DB_DIR}" ] || _ALARM_DB_DIR="$(mktemp -d)"
     db="${_ALARM_DB_DIR}/${repo}.db"
     if [ ! -s "${db}" ]; then
@@ -121,7 +142,12 @@ alarm_pkg_version() {
     fi
     entry="$(tar tzf "${db}" 2>/dev/null | grep -oE "^${name}-[0-9][^/]*" | sort -u | head -1)"
     [ -n "${entry}" ] || return 1
-    ver="${entry#"${name}-"}"
+    printf '%s' "${entry#"${name}-"}"
+}
+
+alarm_pkg_version() {
+    local ver
+    ver="$(alarm_pkg_fullversion "$1" "$2")" || return 1
     printf '%s' "${ver%-*}"
 }
 

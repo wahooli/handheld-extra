@@ -52,6 +52,7 @@ packages/*/patch-set/
 .upstream-report.md
 
 packages/gtk2/
+packages/lsfg-vk-git/
 
 .DS_Store
 *.swp
@@ -59,3 +60,5 @@ packages/gtk2/
 .idea/
 .vscode/
 __pycache__
+
+tools/

@@ -1,0 +1,201 @@
+pkgname=vulkan-freedreno
+pkgver=26.2.5
+_pkgver=${pkgver/[a-z]/-&}
+pkgrel=1.1
+epoch=1
+pkgdesc='Open-source Vulkan driver for Adreno GPUs (turnip): the mesa release ALARM ships plus community patches, with a -perf variant selectable per game'
+arch=(aarch64)
+url='https://docs.mesa3d.org/drivers/freedreno.html'
+license=('MIT AND BSD-3-Clause AND SGI-B-2.0')
+depends=(expat glibc libdisplay-info libdrm libgcc libstdc++ libx11 libxcb libxshmfence
+         spirv-tools systemd-libs vulkan-icd-loader vulkan-mesa-implicit-layers wayland
+         xcb-util-keysyms zlib zstd)
+makedepends=(glslang meson patchelf python-mako python-packaging python-ply python-pycparser
+             python-yaml wayland-protocols xorgproto)
+optdepends=('vulkan-mesa-layers: additional vulkan layers')
+provides=(vulkan-driver)
+options=(!lto)
+source=("https://archive.mesa3d.org/mesa-${_pkgver}.tar.xz")
+sha256sums=(SKIP)
+
+_upstream_patches=(
+  0001-tu-Don-t-truncate-subdraw-size.patch
+  0002-tu-Propagate-vp-state-for-binInfo.patch
+  0003-freedreno-Add-chip-support-for-a722.patch
+  0004-tu-Don-t-write-LRZ-direction-when-not-writing-LRZ.patch
+  0005-freedreno-Add-chip-id-support-for-A830v1.patch
+  0006-tu-Disable-LRZ-for-depth-resolve-targets.patch
+  0007-tu-Workaround-32B-rollover-bug-in-GPU-firmware.patch
+  0008-tu-Fix-inline-uniform-update-offset.patch
+  0009-turnip-add-drirc-option-for-DEVICE_LOCAL-only-memory.patch
+  0010-turnip-enable-DEVICE_LOCAL-only-memory-type-for-RDR2.patch
+  0011-nir-Add-an-access-index-to-bindless-resource-ir3.patch
+  0012-freedreno-Mark-SSBO-UBO-loads-and-descriptors-as.patch
+  0013-tu-Keep-track-of-PARTIALLY-BOUND-BIT-in-descriptor-s.patch
+  0014-tu-Correctly-set-speculatability.patch
+  0015-ir3-Mark-driver-UBO-loads-as-speculatable.patch
+  0016-ir3-opt-preamble-Consider-speculatability-correctly.patch
+  0017-ir3-Consider-speculability-when-lowering-UBOs-to-con.patch
+  0018-ir3-Don-t-use-early-preamble-when-the-preamble-is-no.patch
+)
+
+_patches=(
+  0001-tu-Invalidate-CCU-color-on-UNDEFINED-transitions-of-.patch
+  0002-freedreno-Disable-early-preamble-and-scalar-predicat.patch
+  0003-tu-Add-TU_DEBUG-deck_emu-to-advertise-being-a-Steam-.patch
+  0004-tu-Don-t-request-mid-submission-preemption.patch
+  0005-tu-Add-TU_SAFE_PREEMPT-for-preemption-that-keeps-the.patch
+)
+
+_perf_patches=(
+  0001-tu-autotune-Favour-GMEM-rendering-in-the-bandwidth-c.patch
+  0002-ir3-Skip-preambles-that-grow-past-a-size-limit.patch
+)
+
+_meson_options=(
+  --optimization 2
+  -D b_ndebug=true
+  -D platforms=x11,wayland
+  -D gallium-drivers=
+  -D vulkan-drivers=freedreno
+  -D freedreno-kmds=msm,virtio
+  -D vulkan-layers=
+  -D vulkan-loader-rpath=
+  -D vulkan-manifest-per-architecture=false
+  -D opengl=false
+  -D gles1=disabled
+  -D gles2=disabled
+  -D egl=disabled
+  -D glx=disabled
+  -D glvnd=disabled
+  -D gbm=disabled
+  -D shared-glapi=disabled
+  -D gallium-va=disabled
+  -D gallium-mediafoundation=disabled
+  -D gallium-d3d12-graphics=disabled
+  -D gallium-d3d12-video=disabled
+  -D video-codecs=
+  -D llvm=disabled
+  -D shared-llvm=disabled
+  -D microsoft-clc=disabled
+  -D intel-rt=disabled
+  -D power8=disabled
+  -D xlib-lease=disabled
+  -D libunwind=disabled
+  -D valgrind=disabled
+  -D lmsensors=disabled
+  -D android-libbacktrace=disabled
+  -D android-libperfetto=disabled
+  -D html-docs=disabled
+  -D tools=
+  -D build-tests=false
+  -D expat=enabled
+  -D xmlconfig=enabled
+  -D shader-cache=enabled
+  -D zstd=enabled
+  -D display-info=enabled
+  -D spirv-tools=enabled
+)
+
+_apply() {
+  local sub="$1"; shift
+  local p f
+  for p in "$@"; do
+    f="${startdir}/patches/${sub}${p}"
+    [ -f "${f}" ] || { echo "::  missing patch: ${sub}${p}"; return 1; }
+
+    if ! patch -p1 --batch --forward -F0 --dry-run --quiet < "${f}"; then
+      if patch -p1 -R --batch -F0 --dry-run --quiet < "${f}" >/dev/null 2>&1; then
+        echo "::  ALREADY UPSTREAM in mesa ${pkgver}, skipped: ${sub}${p} -- drop it from the PKGBUILD"
+        continue
+      fi
+      echo "::  FAILED: ${sub}${p}"
+      echo "::  mesa ${pkgver} moved under the patch -- rebase it against this release"
+      echo "::  and bump pkgrel. Until then devices keep ALARM's driver."
+      return 1
+    fi
+    patch -p1 --batch --forward -F0 --quiet < "${f}"
+    echo "::  applied: ${sub}${p}"
+  done
+}
+
+prepare() {
+  cd "mesa-${_pkgver}"
+  _apply "upstream/" "${_upstream_patches[@]}"
+  _apply "" "${_patches[@]}"
+  echo "${_pkgver}-handheld${epoch}.${pkgrel}" > VERSION
+
+  cd "${srcdir}"
+  rm -rf "mesa-${_pkgver}-perf"
+  cp -a "mesa-${_pkgver}" "mesa-${_pkgver}-perf"
+  cd "mesa-${_pkgver}-perf"
+  _apply "perf/" "${_perf_patches[@]}"
+  echo "${_pkgver}-handheld${epoch}.${pkgrel}-perf" > VERSION
+}
+
+build() {
+  arch-meson "mesa-${_pkgver}" build "${_meson_options[@]}"
+  meson compile -C build
+
+  arch-meson "mesa-${_pkgver}-perf" build-perf "${_meson_options[@]}"
+  meson compile -C build-perf
+}
+
+check() {
+  local a=build/src/freedreno/vulkan/libvulkan_freedreno.so
+  local b=build-perf/src/freedreno/vulkan/libvulkan_freedreno.so
+  [ -f "${a}" ] && [ -f "${b}" ] \
+    || { echo "::  a variant did not build"; return 1; }
+  grep -q -a -- "-handheld${epoch}.${pkgrel}-perf" "${b}" \
+    || { echo "::  the -perf variant does not carry its version tag"; return 1; }
+  cmp -s "${a}" "${b}" \
+    && { echo "::  the -perf variant is identical to the default; patches/perf/ did not land"; return 1; }
+  grep -q -a 'deck_emu' "${a}" \
+    || { echo "::  TU_DEBUG=deck_emu is missing from the driver"; return 1; }
+  grep -q -a 'tu_expose_device_local_only_memory_type' "${a}" \
+    || { echo "::  the upstream backports did not make it into the driver"; return 1; }
+}
+
+_check_ldconfig() {
+  local out
+  out="$(ldconfig -n "${pkgdir}/usr/lib" 2>&1)" || true
+  [ -z "${out}" ] || { echo "::  ldconfig is unhappy with the installed libraries:"; echo "${out}"; return 1; }
+}
+
+package() {
+  meson install -C build --destdir "${pkgdir}"
+
+  find "${pkgdir}" -type f \
+    ! -path "${pkgdir}/usr/lib/libvulkan_freedreno.so" \
+    ! -path "${pkgdir}/usr/share/vulkan/icd.d/freedreno_icd.json" \
+    -print -delete
+  find "${pkgdir}" -type d -empty -delete
+  [ -f "${pkgdir}/usr/lib/libvulkan_freedreno.so" ] \
+    && [ -f "${pkgdir}/usr/share/vulkan/icd.d/freedreno_icd.json" ] \
+    || { echo "::  the build did not produce the driver and its ICD manifest"; return 1; }
+
+  install -Dm755 build-perf/src/freedreno/vulkan/libvulkan_freedreno.so \
+    "${pkgdir}/usr/lib/libvulkan_freedreno_perf.so"
+  patchelf --set-soname libvulkan_freedreno_perf.so "${pkgdir}/usr/lib/libvulkan_freedreno_perf.so"
+  sed 's|"libvulkan_freedreno.so"|"libvulkan_freedreno_perf.so"|' \
+    "${pkgdir}/usr/share/vulkan/icd.d/freedreno_icd.json" > freedreno_perf_icd.json
+  grep -q 'libvulkan_freedreno_perf.so' freedreno_perf_icd.json \
+    || { echo "::  could not derive the -perf manifest from the default one"; return 1; }
+  install -Dm644 freedreno_perf_icd.json \
+    "${pkgdir}/usr/share/vulkan/handheld-extra/freedreno_perf_icd.json"
+
+  cat > turnip-perf <<'WRAP'
+#!/bin/sh
+export VK_DRIVER_FILES=/usr/share/vulkan/handheld-extra/freedreno_perf_icd.json
+export VK_ICD_FILENAMES="$VK_DRIVER_FILES"
+exec "$@"
+WRAP
+  install -Dm755 turnip-perf "${pkgdir}/usr/bin/turnip-perf"
+
+  install -Dm644 "mesa-${_pkgver}/src/freedreno/vulkan/00-turnip-defaults.conf" \
+    "${pkgdir}/usr/share/drirc.d/01-handheld-extra-turnip.conf"
+
+  install -Dm644 "mesa-${_pkgver}/docs/license.rst" -t "${pkgdir}/usr/share/licenses/${pkgname}/"
+
+  _check_ldconfig
+}

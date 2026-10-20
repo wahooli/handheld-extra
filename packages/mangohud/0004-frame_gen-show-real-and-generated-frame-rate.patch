@@ -1,0 +1,684 @@
+From 12e9452176e8904923be64acfb02bba5564dc880 Mon Sep 17 00:00:00 2001
+From: Waltteri Hooli <1420194+wahooli@users.noreply.github.com>
+Date: Mon, 21 Sep 2026 19:47:16 +0300
+Subject: [PATCH] frame_gen: show real and generated frame rate around a
+ frame-generating layer
+
+Add a probe layer (libMangoHud_probe.so) that counts vkQueuePresentKHR on the
+other side of a frame generator (lsfg-vk), a meta-layer that pins the order
+probe -> lsfg-vk -> overlay, and a frame_gen row that shows the rate the fps
+row does not show plus the measured multiplier.
+---
+ data/MangoHud.conf                  |   3 +
+ src/framegen.cpp                    |  97 +++++++++++
+ src/framegen.h                      |  25 +++
+ src/framegen_probe.c                | 259 ++++++++++++++++++++++++++++
+ src/hud_elements.cpp                |  30 ++++
+ src/hud_elements.h                  |   1 +
+ src/mangohud_framegen_order.json.in |  18 ++
+ src/mangohud_probe.json.in          |  20 +++
+ src/meson.build                     |  28 +++
+ src/overlay.cpp                     |   2 +
+ src/overlay_params.cpp              |   4 +
+ src/overlay_params.h                |   1 +
+ 12 files changed, 488 insertions(+)
+ create mode 100644 src/framegen.cpp
+ create mode 100644 src/framegen.h
+ create mode 100644 src/framegen_probe.c
+ create mode 100644 src/mangohud_framegen_order.json.in
+ create mode 100644 src/mangohud_probe.json.in
+
+diff --git a/data/MangoHud.conf b/data/MangoHud.conf
+index 276c697..471efaf 100644
+--- a/data/MangoHud.conf
++++ b/data/MangoHud.conf
+@@ -70,6 +70,9 @@
+ ### Show FPS only. ***Not meant to be used with other display params***
+ # fps_only
+ 
++### Show the real and generated frame rate around a frame generator (lsfg-vk)
++# frame_gen
++
+ ### Display custom centered text, useful for a header
+ # custom_text_center=
+ 
+diff --git a/src/framegen.cpp b/src/framegen.cpp
+new file mode 100644
+index 0000000..e5f1f05
+--- /dev/null
++++ b/src/framegen.cpp
+@@ -0,0 +1,97 @@
++#include "framegen.h"
++
++#include <cstring>
++#include <string>
++#include <dlfcn.h>
++#include <link.h>
++#include <spdlog/spdlog.h>
++
++namespace framegen {
++
++stats current;
++
++namespace {
++
++struct probe_stats {
++    uint32_t version;
++    uint32_t reserved;
++    uint64_t presents;
++    uint64_t last_present_ns;
++};
++
++const probe_stats *g_probe {nullptr};
++bool g_lsfg_loaded {false};
++uint64_t g_last_presents {0};
++int g_lookups {0};
++
++struct scan {
++    std::string probe_path;
++    bool lsfg {false};
++};
++
++int on_object(struct dl_phdr_info *info, size_t, void *data)
++{
++    auto *s = static_cast<scan *>(data);
++    if (!info->dlpi_name || !*info->dlpi_name)
++        return 0;
++    const char *base = std::strrchr(info->dlpi_name, '/');
++    base = base ? base + 1 : info->dlpi_name;
++    if (!std::strcmp(base, "libMangoHud_probe.so"))
++        s->probe_path = info->dlpi_name;
++    else if (!std::strncmp(base, "liblsfg-vk-layer", sizeof("liblsfg-vk-layer") - 1))
++        s->lsfg = true;
++    return 0;
++}
++
++bool locate()
++{
++    scan s;
++    dl_iterate_phdr(on_object, &s);
++    g_lsfg_loaded = s.lsfg;
++    current.label = g_lsfg_loaded ? "LSFG" : "FRAMEGEN";
++
++    if (s.probe_path.empty())
++        return false;
++    void *h = dlopen(s.probe_path.c_str(), RTLD_NOW | RTLD_NOLOAD);
++    if (!h)
++        return false;
++    auto *p = static_cast<const probe_stats *>(dlsym(h, "mangohud_probe_stats"));
++    if (!p || p->version != 1) {
++        SPDLOG_DEBUG("frame generation probe found but unusable (version {})", p ? p->version : 0);
++        return false;
++    }
++    g_probe = p;
++    g_last_presents = __atomic_load_n(&p->presents, __ATOMIC_RELAXED);
++    SPDLOG_DEBUG("frame generation probe attached: {}", s.probe_path);
++    return true;
++}
++
++}
++
++void update(double own_fps, uint64_t elapsed_ns)
++{
++    if (!g_probe) {
++        if (g_lookups++ % 4 == 0)
++            current.probe_found = locate();
++        if (!g_probe) {
++            current.active = false;
++            return;
++        }
++    }
++
++    const uint64_t presents = __atomic_load_n(&g_probe->presents, __ATOMIC_RELAXED);
++    const uint64_t delta = presents - g_last_presents;
++    g_last_presents = presents;
++    if (elapsed_ns == 0)
++        return;
++    const double probe_fps = 1e9 * double(delta) / double(elapsed_ns);
++
++    current.probe_found = true;
++    current.overlay_is_input = probe_fps >= own_fps;
++    current.input_fps  = current.overlay_is_input ? own_fps : probe_fps;
++    current.output_fps = current.overlay_is_input ? probe_fps : own_fps;
++    current.ratio = current.input_fps > 0 ? current.output_fps / current.input_fps : 1.0;
++    current.active = current.input_fps > 0 && current.ratio >= 1.15;
++}
++
++}
+diff --git a/src/framegen.h b/src/framegen.h
+new file mode 100644
+index 0000000..97dd621
+--- /dev/null
++++ b/src/framegen.h
+@@ -0,0 +1,25 @@
++#pragma once
++#ifndef MANGOHUD_FRAMEGEN_H
++#define MANGOHUD_FRAMEGEN_H
++
++#include <cstdint>
++
++namespace framegen {
++
++struct stats {
++    bool probe_found {false};
++    bool active {false};
++    bool overlay_is_input {true};
++    double input_fps {0};
++    double output_fps {0};
++    double ratio {1};
++    const char *label {"FRAMEGEN"};
++};
++
++extern stats current;
++
++void update(double own_fps, uint64_t elapsed_ns);
++
++}
++
++#endif
+diff --git a/src/framegen_probe.c b/src/framegen_probe.c
+new file mode 100644
+index 0000000..2a27863
+--- /dev/null
++++ b/src/framegen_probe.c
+@@ -0,0 +1,259 @@
++#define _POSIX_C_SOURCE 200809L
++
++#include <pthread.h>
++#include <stdint.h>
++#include <stdlib.h>
++#include <string.h>
++#include <time.h>
++
++#include <vulkan/vulkan.h>
++#include <vulkan/vk_layer.h>
++
++#define PROBE_EXPORT __attribute__((visibility("default")))
++
++struct mangohud_probe_stats {
++    uint32_t version;
++    uint32_t reserved;
++    uint64_t presents;
++    uint64_t last_present_ns;
++};
++
++PROBE_EXPORT struct mangohud_probe_stats mangohud_probe_stats = { 1, 0, 0, 0 };
++
++#define DISPATCH_KEY(obj) (*(void **)(obj))
++
++struct instance_entry {
++    void *key;
++    VkInstance instance;
++    PFN_vkGetInstanceProcAddr gipa;
++    struct instance_entry *next;
++};
++
++struct device_entry {
++    void *key;
++    PFN_vkGetDeviceProcAddr gdpa;
++    PFN_vkQueuePresentKHR queue_present;
++    PFN_vkDestroyDevice destroy_device;
++    struct device_entry *next;
++};
++
++static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
++static struct instance_entry *g_instances;
++static struct device_entry *g_devices;
++
++static struct instance_entry *find_instance(void *key)
++{
++    struct instance_entry *e;
++    pthread_mutex_lock(&g_lock);
++    for (e = g_instances; e && e->key != key; e = e->next)
++        ;
++    pthread_mutex_unlock(&g_lock);
++    return e;
++}
++
++static struct device_entry *find_device(void *key)
++{
++    struct device_entry *e;
++    pthread_mutex_lock(&g_lock);
++    for (e = g_devices; e && e->key != key; e = e->next)
++        ;
++    pthread_mutex_unlock(&g_lock);
++    return e;
++}
++
++static void remove_instance(void *key)
++{
++    struct instance_entry **p;
++    pthread_mutex_lock(&g_lock);
++    for (p = &g_instances; *p; p = &(*p)->next) {
++        if ((*p)->key == key) {
++            struct instance_entry *dead = *p;
++            *p = dead->next;
++            free(dead);
++            break;
++        }
++    }
++    pthread_mutex_unlock(&g_lock);
++}
++
++static void remove_device(void *key)
++{
++    struct device_entry **p;
++    pthread_mutex_lock(&g_lock);
++    for (p = &g_devices; *p; p = &(*p)->next) {
++        if ((*p)->key == key) {
++            struct device_entry *dead = *p;
++            *p = dead->next;
++            free(dead);
++            break;
++        }
++    }
++    pthread_mutex_unlock(&g_lock);
++}
++
++static uint64_t now_ns(void)
++{
++    struct timespec ts;
++    clock_gettime(CLOCK_MONOTONIC, &ts);
++    return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
++}
++
++static VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL probe_GetInstanceProcAddr(VkInstance instance, const char *name);
++static VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL probe_GetDeviceProcAddr(VkDevice device, const char *name);
++
++static VKAPI_ATTR VkResult VKAPI_CALL probe_CreateInstance(
++    const VkInstanceCreateInfo *pCreateInfo,
++    const VkAllocationCallbacks *pAllocator,
++    VkInstance *pInstance)
++{
++    VkLayerInstanceCreateInfo *chain = (VkLayerInstanceCreateInfo *)pCreateInfo->pNext;
++    while (chain && !(chain->sType == VK_STRUCTURE_TYPE_LOADER_INSTANCE_CREATE_INFO &&
++                      chain->function == VK_LAYER_LINK_INFO))
++        chain = (VkLayerInstanceCreateInfo *)chain->pNext;
++    if (!chain)
++        return VK_ERROR_INITIALIZATION_FAILED;
++
++    PFN_vkGetInstanceProcAddr gipa = chain->u.pLayerInfo->pfnNextGetInstanceProcAddr;
++    PFN_vkCreateInstance create = (PFN_vkCreateInstance)gipa(NULL, "vkCreateInstance");
++    if (!create)
++        return VK_ERROR_INITIALIZATION_FAILED;
++
++    chain->u.pLayerInfo = chain->u.pLayerInfo->pNext;
++    VkResult r = create(pCreateInfo, pAllocator, pInstance);
++    if (r != VK_SUCCESS)
++        return r;
++
++    struct instance_entry *e = calloc(1, sizeof(*e));
++    if (!e)
++        return VK_ERROR_OUT_OF_HOST_MEMORY;
++    e->key = DISPATCH_KEY(*pInstance);
++    e->instance = *pInstance;
++    e->gipa = gipa;
++    pthread_mutex_lock(&g_lock);
++    e->next = g_instances;
++    g_instances = e;
++    pthread_mutex_unlock(&g_lock);
++    return VK_SUCCESS;
++}
++
++static VKAPI_ATTR void VKAPI_CALL probe_DestroyInstance(VkInstance instance, const VkAllocationCallbacks *pAllocator)
++{
++    void *key = DISPATCH_KEY(instance);
++    struct instance_entry *e = find_instance(key);
++    if (!e)
++        return;
++    PFN_vkDestroyInstance destroy = (PFN_vkDestroyInstance)e->gipa(instance, "vkDestroyInstance");
++    remove_instance(key);
++    if (destroy)
++        destroy(instance, pAllocator);
++}
++
++static VKAPI_ATTR VkResult VKAPI_CALL probe_CreateDevice(
++    VkPhysicalDevice physicalDevice,
++    const VkDeviceCreateInfo *pCreateInfo,
++    const VkAllocationCallbacks *pAllocator,
++    VkDevice *pDevice)
++{
++    struct instance_entry *ie = find_instance(DISPATCH_KEY(physicalDevice));
++    if (!ie)
++        return VK_ERROR_INITIALIZATION_FAILED;
++
++    VkLayerDeviceCreateInfo *chain = (VkLayerDeviceCreateInfo *)pCreateInfo->pNext;
++    while (chain && !(chain->sType == VK_STRUCTURE_TYPE_LOADER_DEVICE_CREATE_INFO &&
++                      chain->function == VK_LAYER_LINK_INFO))
++        chain = (VkLayerDeviceCreateInfo *)chain->pNext;
++    if (!chain)
++        return VK_ERROR_INITIALIZATION_FAILED;
++
++    PFN_vkGetInstanceProcAddr gipa = chain->u.pLayerInfo->pfnNextGetInstanceProcAddr;
++    PFN_vkGetDeviceProcAddr gdpa = chain->u.pLayerInfo->pfnNextGetDeviceProcAddr;
++    PFN_vkCreateDevice create = (PFN_vkCreateDevice)gipa(ie->instance, "vkCreateDevice");
++    if (!create)
++        return VK_ERROR_INITIALIZATION_FAILED;
++
++    chain->u.pLayerInfo = chain->u.pLayerInfo->pNext;
++    VkResult r = create(physicalDevice, pCreateInfo, pAllocator, pDevice);
++    if (r != VK_SUCCESS)
++        return r;
++
++    struct device_entry *e = calloc(1, sizeof(*e));
++    if (!e)
++        return VK_ERROR_OUT_OF_HOST_MEMORY;
++    e->key = DISPATCH_KEY(*pDevice);
++    e->gdpa = gdpa;
++    e->queue_present = (PFN_vkQueuePresentKHR)gdpa(*pDevice, "vkQueuePresentKHR");
++    e->destroy_device = (PFN_vkDestroyDevice)gdpa(*pDevice, "vkDestroyDevice");
++    pthread_mutex_lock(&g_lock);
++    e->next = g_devices;
++    g_devices = e;
++    pthread_mutex_unlock(&g_lock);
++    return VK_SUCCESS;
++}
++
++static VKAPI_ATTR void VKAPI_CALL probe_DestroyDevice(VkDevice device, const VkAllocationCallbacks *pAllocator)
++{
++    void *key = DISPATCH_KEY(device);
++    struct device_entry *e = find_device(key);
++    if (!e)
++        return;
++    PFN_vkDestroyDevice destroy = e->destroy_device;
++    remove_device(key);
++    if (destroy)
++        destroy(device, pAllocator);
++}
++
++static VKAPI_ATTR VkResult VKAPI_CALL probe_QueuePresentKHR(VkQueue queue, const VkPresentInfoKHR *pPresentInfo)
++{
++    struct device_entry *e = find_device(DISPATCH_KEY(queue));
++    if (!e || !e->queue_present)
++        return VK_ERROR_DEVICE_LOST;
++
++    __atomic_store_n(&mangohud_probe_stats.last_present_ns, now_ns(), __ATOMIC_RELAXED);
++    __atomic_fetch_add(&mangohud_probe_stats.presents, 1, __ATOMIC_RELAXED);
++    return e->queue_present(queue, pPresentInfo);
++}
++
++static PFN_vkVoidFunction probe_intercept(const char *name)
++{
++    if (!strcmp(name, "vkGetInstanceProcAddr")) return (PFN_vkVoidFunction)probe_GetInstanceProcAddr;
++    if (!strcmp(name, "vkGetDeviceProcAddr"))   return (PFN_vkVoidFunction)probe_GetDeviceProcAddr;
++    if (!strcmp(name, "vkCreateInstance"))      return (PFN_vkVoidFunction)probe_CreateInstance;
++    if (!strcmp(name, "vkDestroyInstance"))     return (PFN_vkVoidFunction)probe_DestroyInstance;
++    if (!strcmp(name, "vkCreateDevice"))        return (PFN_vkVoidFunction)probe_CreateDevice;
++    if (!strcmp(name, "vkDestroyDevice"))       return (PFN_vkVoidFunction)probe_DestroyDevice;
++    if (!strcmp(name, "vkQueuePresentKHR"))     return (PFN_vkVoidFunction)probe_QueuePresentKHR;
++    return NULL;
++}
++
++static VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL probe_GetDeviceProcAddr(VkDevice device, const char *name)
++{
++    PFN_vkVoidFunction f = probe_intercept(name);
++    if (f)
++        return f;
++    struct device_entry *e = find_device(DISPATCH_KEY(device));
++    return e ? e->gdpa(device, name) : NULL;
++}
++
++static VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL probe_GetInstanceProcAddr(VkInstance instance, const char *name)
++{
++    PFN_vkVoidFunction f = probe_intercept(name);
++    if (f)
++        return f;
++    if (!instance)
++        return NULL;
++    struct instance_entry *e = find_instance(DISPATCH_KEY(instance));
++    return e ? e->gipa(instance, name) : NULL;
++}
++
++PROBE_EXPORT VKAPI_ATTR VkResult VKAPI_CALL vkNegotiateLoaderLayerInterfaceVersion(VkNegotiateLayerInterface *pVersionStruct)
++{
++    if (!pVersionStruct || pVersionStruct->sType != LAYER_NEGOTIATE_INTERFACE_STRUCT)
++        return VK_ERROR_INITIALIZATION_FAILED;
++    if (pVersionStruct->loaderLayerInterfaceVersion < 2)
++        return VK_ERROR_INITIALIZATION_FAILED;
++    pVersionStruct->loaderLayerInterfaceVersion = 2;
++    pVersionStruct->pfnGetInstanceProcAddr = probe_GetInstanceProcAddr;
++    pVersionStruct->pfnGetDeviceProcAddr = probe_GetDeviceProcAddr;
++    pVersionStruct->pfnGetPhysicalDeviceProcAddr = NULL;
++    return VK_SUCCESS;
++}
+diff --git a/src/hud_elements.cpp b/src/hud_elements.cpp
+index 1aedb09..adbf542 100644
+--- a/src/hud_elements.cpp
++++ b/src/hud_elements.cpp
+@@ -28,6 +28,7 @@
+ #include "fex.h"
+ #include "ftrace.h"
+ #include "winesync.h"
++#include "framegen.h"
+ #include "fps_limiter.h"
+ 
+ #define CHAR_CELSIUS    "\xe2\x84\x83"
+@@ -1775,6 +1776,32 @@ void HudElements::_display_session() {
+     ImGui::PopFont();
+ }
+ 
++void HudElements::frame_gen(){
++    if (!HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_frame_gen]
++        || HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_fps_only]
++        || !framegen::current.active)
++        return;
++
++    const auto& fg = framegen::current;
++    ImguiNextColumnFirstItem();
++    HUDElements.TextColored(HUDElements.colors.engine, "%s", fg.label);
++
++    ImguiNextColumnOrNewRow();
++    right_aligned_text(HUDElements.colors.text, HUDElements.ralign_width, "%.0f",
++                       fg.overlay_is_input ? fg.output_fps : fg.input_fps);
++    ImGui::SameLine(0, 1.0f);
++    ImGui::PushFont(HUDElements.sw_stats->font_small);
++    HUDElements.TextColored(HUDElements.colors.text, "%s", fg.overlay_is_input ? "OUT" : "IN");
++    ImGui::PopFont();
++
++    ImguiNextColumnOrNewRow();
++    right_aligned_text(HUDElements.colors.text, HUDElements.ralign_width, "%.2f", fg.ratio);
++    ImGui::SameLine(0, 1.0f);
++    ImGui::PushFont(HUDElements.sw_stats->font_small);
++    HUDElements.TextColored(HUDElements.colors.text, "x");
++    ImGui::PopFont();
++}
++
+ void HudElements::fex_stats()
+ {
+ #ifdef HAVE_FEX
+@@ -1996,6 +2023,7 @@ void HudElements::sort_elements(const std::pair<std::string, std::string>& optio
+         {"refresh_rate", {refresh_rate}},
+         {"winesync", {winesync}},
+         {"present_mode", {present_mode}},
++        {"frame_gen", {frame_gen}},
+         {"network", {network}},
+         {"display_server", {_display_session}},
+         {"fex_stats", {fex_stats}},
+@@ -2075,6 +2103,8 @@ void HudElements::legacy_elements(const overlay_params* temp_params){
+         ordered_functions.push_back({throttling_status, "throttling_status", value});
+     if (temp_params->enabled[OVERLAY_PARAM_ENABLED_fps])
+         ordered_functions.push_back({fps, "fps", value});
++    if (temp_params->enabled[OVERLAY_PARAM_ENABLED_frame_gen])
++        ordered_functions.push_back({frame_gen, "frame_gen", value});
+     for (const auto& pair : options) {
+         if (pair.first.find("graphs") != std::string::npos) {
+             std::stringstream ss(pair.second);
+diff --git a/src/hud_elements.h b/src/hud_elements.h
+index 405e0ba..84f6ea8 100644
+--- a/src/hud_elements.h
++++ b/src/hud_elements.h
+@@ -114,6 +114,7 @@ class HudElements{
+         static void refresh_rate();
+         static void winesync();
+         static void present_mode();
++        static void frame_gen();
+         static void network();
+         static void _display_session();
+         static void fex_stats();
+diff --git a/src/mangohud_framegen_order.json.in b/src/mangohud_framegen_order.json.in
+new file mode 100644
+index 0000000..7a92665
+--- /dev/null
++++ b/src/mangohud_framegen_order.json.in
+@@ -0,0 +1,18 @@
++{
++    "file_format_version" : "1.2.0",
++    "layer" : {
++      "name": "VK_LAYER_MANGOHUD_framegen_order_@cpu_family@",
++      "type": "GLOBAL",
++      "api_version": "1.3.0",
++      "implementation_version": "1",
++      "description": "Keeps the MangoHud probe above lsfg-vk and the overlay below it: the HUD is drawn on every output frame instead of being interpolated, and the overlay can show both the real and the generated frame rate",
++      "component_layers": [
++        "VK_LAYER_MANGOHUD_probe_@cpu_family@",
++        "VK_LAYER_LSFGVK_frame_generation",
++        "VK_LAYER_MANGOHUD_overlay_@cpu_family@"
++      ],
++      "disable_environment": {
++        "DISABLE_MANGOHUD_FRAMEGEN_ORDER": "1"
++      }
++    }
++}
+diff --git a/src/mangohud_probe.json.in b/src/mangohud_probe.json.in
+new file mode 100644
+index 0000000..14de457
+--- /dev/null
++++ b/src/mangohud_probe.json.in
+@@ -0,0 +1,20 @@
++{
++    "file_format_version" : "1.0.0",
++    "layer" : {
++      "name": "VK_LAYER_MANGOHUD_probe_@cpu_family@",
++      "type": "GLOBAL",
++      "api_version": "1.3.0",
++      "library_path": "@ld_libdir_mangohud_abs@/libMangoHud_probe.so",
++      "implementation_version": "1",
++      "description": "MangoHud present counter for frame-generation statistics",
++      "functions": {
++         "vkNegotiateLoaderLayerInterfaceVersion": "vkNegotiateLoaderLayerInterfaceVersion"
++      },
++      "enable_environment": {
++        "MANGOHUD": "1"
++      },
++      "disable_environment": {
++        "DISABLE_MANGOHUD": "1"
++      }
++    }
++}
+diff --git a/src/meson.build b/src/meson.build
+index 9534a18..97c0a4f 100644
+--- a/src/meson.build
++++ b/src/meson.build
+@@ -95,6 +95,7 @@ if is_unixy
+     'net.cpp',
+     'shell.cpp',
+     'ftrace.cpp',
++    'framegen.cpp',
+   )
+ 
+   if get_option('with_fex')
+@@ -339,6 +340,33 @@ configure_file(input : 'mangohud.json.in',
+   install_tag : 'runtime',
+ )
+ 
++if is_unixy
++  shared_library(
++    'MangoHud_probe',
++    files('framegen_probe.c'),
++    gnu_symbol_visibility : 'hidden',
++    dependencies : [dep_pthread, dep_vulkan_headers],
++    install_dir : libdir_mangohud,
++    install : true
++  )
++
++  configure_file(input : 'mangohud_probe.json.in',
++    output : '@0@_probe.@1@.json'.format(meson.project_name(), host_machine.cpu_family()),
++    configuration : conf_data,
++    install : true,
++    install_dir : join_paths(get_option('datadir'), 'vulkan', 'implicit_layer.d'),
++    install_tag : 'runtime',
++  )
++
++  configure_file(input : 'mangohud_framegen_order.json.in',
++    output : '@0@_framegen_order.@1@.json'.format(meson.project_name(), host_machine.cpu_family()),
++    configuration : conf_data,
++    install : true,
++    install_dir : join_paths(get_option('sysconfdir'), 'vulkan', 'implicit_layer.d'),
++    install_tag : 'runtime',
++  )
++endif
++
+ configure_file(input : '../bin/mangohud.in',
+   output : 'mangohud',
+   configuration : conf_data,
+diff --git a/src/overlay.cpp b/src/overlay.cpp
+index 2196953..6594d1d 100644
+--- a/src/overlay.cpp
++++ b/src/overlay.cpp
+@@ -28,6 +28,7 @@
+ #include "net.h"
+ #include "fex.h"
+ #include "ftrace.h"
++#include "framegen.h"
+ 
+ #ifdef __linux__
+ #include <libgen.h>
+@@ -270,6 +271,7 @@ void update_hud_info_with_frametime(struct swapchain_stats& sw_stats, const stru
+ #endif
+ 
+       sw_stats.fps = 1000000000.0 * sw_stats.n_frames_since_update / elapsed;
++      framegen::update(sw_stats.fps, elapsed);
+ 
+       if (real_params->enabled[OVERLAY_PARAM_ENABLED_time]) {
+          std::time_t t = std::time(nullptr);
+diff --git a/src/overlay_params.cpp b/src/overlay_params.cpp
+index b10a0ce..be7bf63 100644
+--- a/src/overlay_params.cpp
++++ b/src/overlay_params.cpp
+@@ -844,6 +844,7 @@ parse_overlay_env(struct overlay_params *params,
+ static void set_param_defaults(struct overlay_params *params){
+    params->enabled[OVERLAY_PARAM_ENABLED_fps] = true;
+    params->enabled[OVERLAY_PARAM_ENABLED_frame_timing] = true;
++   params->enabled[OVERLAY_PARAM_ENABLED_frame_gen] = true;
+    params->enabled[OVERLAY_PARAM_ENABLED_core_load] = false;
+    params->enabled[OVERLAY_PARAM_ENABLED_core_bars] = false;
+    params->enabled[OVERLAY_PARAM_ENABLED_cpu_temp] = false;
+@@ -1319,6 +1320,7 @@ void presets(int preset, struct overlay_params *params, bool inherit) {
+          add_to_options(params, "fps", "1");
+          add_to_options(params, "table_columns", "20");
+          add_to_options(params, "frame_timing", "1");
++         add_to_options(params, "frame_gen", "1");
+          add_to_options(params, "frametime", "0");
+          add_to_options(params, "cpu_stats", "1");
+          add_to_options(params, "gpu_stats", "1");
+@@ -1344,6 +1346,7 @@ void presets(int preset, struct overlay_params *params, bool inherit) {
+          add_to_options(params, "gpu_core_clock", "1");
+          add_to_options(params, "battery", "1");
+          add_to_options(params, "hdr", "1");
++         add_to_options(params, "frame_gen", "1");
+          add_to_options(params, "debug", "0");
+          break;
+ 
+@@ -1373,6 +1376,7 @@ void presets(int preset, struct overlay_params *params, bool inherit) {
+          add_to_options(params, "frame_timing_detailed", "1");
+          add_to_options(params, "network", "1");
+          add_to_options(params, "present_mode", "0");
++         add_to_options(params, "frame_gen", "1");
+          add_to_options(params, "proc_vram", "0");
+          add_to_options(params, "procmem", "0");
+          add_to_options(params, "display_server", "0");
+diff --git a/src/overlay_params.h b/src/overlay_params.h
+index 0ff802c..40a4654 100644
+--- a/src/overlay_params.h
++++ b/src/overlay_params.h
+@@ -128,6 +128,7 @@ struct Tracepoint;
+    OVERLAY_PARAM_BOOL(frame_timing_detailed)         \
+    OVERLAY_PARAM_BOOL(winesync)                      \
+    OVERLAY_PARAM_BOOL(present_mode)                  \
++   OVERLAY_PARAM_BOOL(frame_gen)                     \
+    OVERLAY_PARAM_BOOL(time_no_label)                 \
+    OVERLAY_PARAM_BOOL(display_server)                \
+    OVERLAY_PARAM_BOOL(cpu_efficiency)                \
+-- 
+2.56.0
+

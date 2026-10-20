@@ -1,0 +1,51 @@
+From 84d36193fdfe344986fa93f76c67954136803c6d Mon Sep 17 00:00:00 2001
+From: Danylo Piliaiev <dpiliaiev@igalia.com>
+Date: Tue, 18 Aug 2026 17:03:41 +0200
+Subject: [PATCH] tu: Disable LRZ for depth resolve targets
+
+After depth resolve the target doesn't have valid LRZ.
+
+Signed-off-by: Danylo Piliaiev <dpiliaiev@igalia.com>
+Part-of: <https://gitlab.freedesktop.org/mesa/mesa/-/merge_requests/43873>
+(cherry picked from mesa main commit 84d36193fdfe344986fa93f76c67954136803c6d)
+---
+ src/freedreno/vulkan/tu_clear_blit.cc |  4 ++++
+ src/freedreno/vulkan/tu_lrz.cc        | 10 ++++++++++
+ 2 files changed, 14 insertions(+)
+
+diff --git a/src/freedreno/vulkan/tu_clear_blit.cc b/src/freedreno/vulkan/tu_clear_blit.cc
+index 0118c93ebd9..af49cf0c34c 100644
+--- a/src/freedreno/vulkan/tu_clear_blit.cc
++++ b/src/freedreno/vulkan/tu_clear_blit.cc
+@@ -3783,6 +3783,10 @@ tu_CmdResolveImage2(VkCommandBuffer commandBuffer,
+    if (ops == &r3d_ops<CHIP>)
+       tu_disable_draw_states(cmd, cs);
+ 
++   if (dst_image->lrz_layout.lrz_total_size) {
++      tu_disable_lrz<CHIP>(cmd, &cmd->cs, dst_image);
++   }
++
+    trace_end_resolve_image(&cmd->trace, &cmd->cs);
+ }
+ TU_GENX(tu_CmdResolveImage2);
+diff --git a/src/freedreno/vulkan/tu_lrz.cc b/src/freedreno/vulkan/tu_lrz.cc
+index 1bf73b42f5a..ad8ccd49f68 100644
+--- a/src/freedreno/vulkan/tu_lrz.cc
++++ b/src/freedreno/vulkan/tu_lrz.cc
+@@ -454,6 +454,16 @@ tu_lrz_begin_renderpass(struct tu_cmd_buffer *cmd)
+          struct tu_image *image = cmd->state.attachments[a]->image;
+          tu_disable_lrz<CHIP>(cmd, &cmd->cs, image);
+       }
++
++      if (subpass->resolve_depth_stencil) {
++         for (unsigned i = 0; i < subpass->resolve_count; i++) {
++            uint32_t a = subpass->resolve_attachments[i].attachment;
++            if (a == VK_ATTACHMENT_UNUSED || cmd->state.attachments[a]->image->lrz_layout.lrz_total_size == 0)
++               continue;
++
++            tu_disable_lrz<CHIP>(cmd, &cmd->cs, cmd->state.attachments[a]->image);
++         }
++      }
+    }
+ 
+     /* Track LRZ valid state */

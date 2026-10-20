@@ -1,0 +1,40 @@
+From c6b3e52a9e5135ce3b8972ac2b52e76a7e04b356 Mon Sep 17 00:00:00 2001
+From: Hugo223 <slimstalker@gmail.com>
+Date: Mon, 14 Sep 2026 22:47:34 +0500
+Subject: [PATCH] turnip: enable DEVICE_LOCAL-only memory type for RDR2
+
+RDR2's native Vulkan renderer reports 'Red Dead Redemption 2' as its
+application name (its D3D12/vkd3d-proton path reports the executable
+name "RDR2.exe" instead). It ships an AMD FSR2 Vulkan backend whose
+memory type selection skips every HOST_VISIBLE type when requesting
+DEVICE_LOCAL ("invisible heap" rule for discrete GPUs), so context
+creation fails on UMA. Enable the workaround for it.
+
+See: https://gitlab.freedesktop.org/mesa/mesa/-/issues/16292
+Part-of: <https://gitlab.freedesktop.org/mesa/mesa/-/merge_requests/44388>
+(cherry picked from mesa main commit c6b3e52a9e5135ce3b8972ac2b52e76a7e04b356)
+---
+ src/freedreno/vulkan/00-turnip-defaults.conf | 11 +++++++++++
+ 1 file changed, 11 insertions(+)
+
+diff --git a/src/freedreno/vulkan/00-turnip-defaults.conf b/src/freedreno/vulkan/00-turnip-defaults.conf
+index 0596f6c0e56..c3c8b64ab83 100644
+--- a/src/freedreno/vulkan/00-turnip-defaults.conf
++++ b/src/freedreno/vulkan/00-turnip-defaults.conf
+@@ -117,5 +117,16 @@
+             <!-- All enemies are invisible without tu_enable_ssbo_emulation -->
+             <option name="tu_enable_ssbo_emulation" value="true" />
+         </application>
++        <application name="Red Dead Redemption 2" application_name_match="Red Dead Redemption 2">
++            <!-- RDR2's native Vulkan renderer reports this application name
++                 (its D3D12/vkd3d-proton path reports the executable name
++                 "RDR2.exe" instead and must keep UMA). The shipped AMD FSR2
++                 Vulkan backend requires a non-host-visible DEVICE_LOCAL
++                 memory type ("invisible heap" rule written for discrete
++                 GPUs) and fails on UMA without one.
++                 See: https://gitlab.freedesktop.org/mesa/mesa/-/issues/16292
++            -->
++            <option name="tu_expose_device_local_only_memory_type" value="true" />
++        </application>
+     </device>
+ </driconf>

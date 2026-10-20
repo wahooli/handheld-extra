@@ -13,7 +13,7 @@ D="packages/${PKG}"
 DRY_RUN="${DRY_RUN:-}"
 IMAGE="${IMAGE:-linux-handheld-builder:latest}"
 
-TRACK=; GITHUB_REPO=; GIT_URL=; OCI_IMAGE=; OCI_TAG_RE=; AUR_PKG=; CURRENT=; INCLUDE_PRERELEASE=
+TRACK=; GITHUB_REPO=; GIT_URL=; GIT_BRANCH=; OCI_IMAGE=; OCI_TAG_RE=; AUR_PKG=; ALARM_REPO=; ALARM_PKG=; CURRENT=; INCLUDE_PRERELEASE=
 TRACK_PATHS=
 PATCHES_REPO=; PATCHES_PATH=; PATCHES_REF='s/.*/&/'; VERSION_FILE=
 SOURCE_REF_FROM=; SOURCE_REF_VAR=; SOURCE_COMMIT_VAR=; SOURCE_GIT=
@@ -42,7 +42,11 @@ case "${VERSION_FROM}" in
     upstream-tag)
         newver="$(printf '%s' "${latest}" | sed -E "${VERSION_SED}")" ;;
     commit-date)
-        _cdate="$(github_commit_date "${GITHUB_REPO}" "${latest}")"
+        if [ -n "${GITHUB_REPO}" ]; then
+            _cdate="$(github_commit_date "${GITHUB_REPO}" "${latest}")"
+        else
+            _cdate="$(git_commit_date "${GIT_URL}" "${latest}")"
+        fi
         [ -n "${_cdate}" ] || { echo "!! ${PKG}: could not read the commit date of ${latest}" >&2; exit 1; }
         newver="${_cdate}.${latest:0:8}" ;;
     repo-file)
@@ -52,8 +56,15 @@ case "${VERSION_FROM}" in
         [ -n "${newver}" ] || { echo "!! no VERSION in ${PATCHES_REPO}:${VERSION_FILE} at ${_ref}" >&2; exit 1; } ;;
     oci-tag)
         newver="${latest//-/.}" ;;
+    alarm)
+        _afull="${latest}"; _aepoch=
+        case "${_afull}" in *:*) _aepoch="${_afull%%:*}"; _afull="${_afull#*:}" ;; esac
+        _arel="${_afull##*-}"
+        newver="${_afull%-*}" ;;
     *)  echo "!! ${PKG}: unknown VERSION_FROM=${VERSION_FROM}" >&2; exit 1 ;;
 esac
+
+[ "${TRACK}" = git-branch ] && newcommit="${latest}"
 
 case "${newver}" in
     ""|*-*|*:*|*/*|*" "*) echo "!! ${PKG}: '${newver}' is not a valid pkgver" >&2; exit 1 ;;
@@ -63,6 +74,8 @@ oldrel="$(grep -oE '^pkgrel=.*' "${D}/PKGBUILD" | head -1 | cut -d= -f2-)"
 echo "    ${VERSION_VAR}: ${oldver} -> ${newver}"
 [ "${oldver}" = "${newver}" ] && echo "    (version unchanged; only the tracked ref moved)"
 [ -n "${newcommit}" ] && echo "    _commit: -> ${newcommit:0:12}"
+
+[ "${VERSION_FROM}" = alarm ] && echo "    pkgrel: ${oldrel} -> ${_arel}.1  (ALARM is at ${_arel}${_aepoch:+, epoch ${_aepoch}})"
 
 if [ -n "${DRY_RUN}" ]; then echo "    [dry-run] nothing written"; exit 0; fi
 
@@ -113,7 +126,14 @@ else
     echo "    checksums are SKIP or absent -- nothing to refresh"
 fi
 
-if [ "${oldver}" != "${newver}" ]; then
+if [ "${VERSION_FROM}" = alarm ]; then
+    if [ -n "${_aepoch}" ]; then
+        grep -qE '^epoch=' "${D}/PKGBUILD" \
+            || { echo "!! ${PKG}: ALARM has epoch ${_aepoch} but the PKGBUILD has no epoch= line" >&2; exit 1; }
+        sed -i -E "s|^epoch=.*|epoch=${_aepoch}|" "${D}/PKGBUILD"
+    fi
+    sed -i -E "s|^pkgrel=.*|pkgrel=${_arel}.1|" "${D}/PKGBUILD"
+elif [ "${oldver}" != "${newver}" ]; then
     sed -i -E "s|^pkgrel=.*|pkgrel=1|" "${D}/PKGBUILD"
     echo "    pkgrel: ${oldrel} -> 1  (version moved)"
 else
