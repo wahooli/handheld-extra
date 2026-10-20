@@ -1,6 +1,6 @@
 pkgname=gamescope
 pkgver=20261014.ec7eda6b
-pkgrel=1
+pkgrel=2
 pkgdesc='SteamOS session compositing window manager (OGC fork + armada handheld patches)'
 arch=(aarch64)
 url='https://github.com/OpenGamingCollective/gamescope'
@@ -95,17 +95,13 @@ prepare() {
   done
   git -c protocol.file.allow=always submodule update
 
-  local p f fuzz applied=0 fuzzed=0
+  local p f out applied=0 fuzzed=0
   for p in "${_patches[@]}"; do
     f="${startdir}/patch-set/${p}"
     [ -f "${f}" ] || { echo "::  missing patch: ${p} (run scripts/fetch-patch-set.sh gamescope)"; return 1; }
 
-    fuzz=
-    if patch -p1 --batch --forward -F0 --dry-run --quiet < "${f}" >/dev/null 2>&1; then
-      fuzz=0
-    elif patch -p1 --batch --forward -F2 --dry-run --quiet < "${f}" >/dev/null 2>&1; then
-      fuzz=2
-    else
+    if ! out="$(patch -p1 --batch --forward -F2 < "${f}")"; then
+      printf '%s\n' "${out}"
       echo "::  FAILED: ${p}"
       echo "::  It does not apply to the fork's ogc branch even at fuzz 2."
       echo "::  Either armada has rebased -- bump CURRENT in upstream.env and"
@@ -114,10 +110,9 @@ prepare() {
       return 1
     fi
 
-    patch -p1 --batch --forward -F"${fuzz}" --quiet < "${f}"
     applied=$((applied + 1))
-    if [ "${fuzz}" != 0 ]; then
-      echo "::  applied WITH FUZZ ${fuzz}: ${p}"
+    if grep -q ' with fuzz ' <<<"${out}"; then
+      echo "::  applied WITH FUZZ: ${p}"
       fuzzed=$((fuzzed + 1))
     fi
   done

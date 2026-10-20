@@ -82,7 +82,7 @@ jobs:
           echo "${RCLONE_SHA}  /tmp/rclone.zip" | sha256sum -c -
           unzip -q -j /tmp/rclone.zip "*/rclone" -d /tmp
           sudo install -m755 /tmp/rclone /usr/local/bin/rclone
-          rclone version | head -1
+          rclone version | sed -n 1p
 
       - name: Restore ccache
         uses: actions/cache/restore@v6
