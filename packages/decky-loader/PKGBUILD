@@ -1,7 +1,7 @@
 pkgname=decky-loader
 pkgver=3.3.0
-_tag=v3.2.8-pre1
-pkgrel=1
+_tag=v3.3.0
+pkgrel=2
 pkgdesc='Plugin loader for the Steam Deck UI (native aarch64 build)'
 arch=(aarch64)
 url=https://github.com/SteamDeckHomebrew/decky-loader
@@ -16,7 +16,7 @@ _srcdir="${pkgname}"
 prepare() {
   cd "${srcdir}/${_srcdir}"
 
-  sed -i 's/^python = ">=3.10,<3.14"/python = ">=3.10,<3.16"/' backend/pyproject.toml
+  sed -i -E 's/^python = ">=3\.10,<3\.[0-9]+"/python = ">=3.10,<3.16"/' backend/pyproject.toml
   grep -q '^python = ">=3.10,<3.16"' backend/pyproject.toml \
     || { echo "PKGBUILD: python constraint not patched — upstream changed it" >&2; return 1; }
 }

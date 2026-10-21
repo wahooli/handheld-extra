@@ -37,7 +37,7 @@ if [ "$(printf '%s' "${CURRENT}" | normalise)" = "$(printf '%s' "${latest}" | no
 fi
 echo "==> ${PKG}: ${CURRENT} -> ${latest}"
 
-newver=; newcommit=
+newver=; newcommit=; newtag=
 case "${VERSION_FROM}" in
     upstream-tag)
         newver="$(printf '%s' "${latest}" | sed -E "${VERSION_SED}")" ;;
@@ -65,6 +65,10 @@ case "${VERSION_FROM}" in
 esac
 
 [ "${TRACK}" = git-branch ] && newcommit="${latest}"
+# A release pinned by a literal _tag= (its tag cannot be rebuilt from the
+# normalised pkgver) moves with it, or the bump republishes the old source
+# under the new version -- decky-loader shipped v3.2.8-pre1 as 3.3.0 that way.
+[ "${TRACK}" = github-release ] && grep -q '^_tag=' "${D}/PKGBUILD" && newtag="${latest}"
 
 case "${newver}" in
     ""|*-*|*:*|*/*|*" "*) echo "!! ${PKG}: '${newver}' is not a valid pkgver" >&2; exit 1 ;;
@@ -74,6 +78,7 @@ oldrel="$(grep -oE '^pkgrel=.*' "${D}/PKGBUILD" | head -1 | cut -d= -f2-)"
 echo "    ${VERSION_VAR}: ${oldver} -> ${newver}"
 [ "${oldver}" = "${newver}" ] && echo "    (version unchanged; only the tracked ref moved)"
 [ -n "${newcommit}" ] && echo "    _commit: -> ${newcommit:0:12}"
+[ -n "${newtag}" ] && echo "    _tag: -> ${newtag}"
 
 [ "${VERSION_FROM}" = alarm ] && echo "    pkgrel: ${oldrel} -> ${_arel}.1  (ALARM is at ${_arel}${_aepoch:+, epoch ${_aepoch}})"
 
@@ -81,6 +86,7 @@ if [ -n "${DRY_RUN}" ]; then echo "    [dry-run] nothing written"; exit 0; fi
 
 sed -i -E "s|^${VERSION_VAR}=.*|${VERSION_VAR}=${newver}|" "${D}/PKGBUILD"
 [ -n "${newcommit}" ] && sed -i -E "s|^_commit=.*|_commit=${newcommit}|" "${D}/PKGBUILD"
+[ -n "${newtag}" ] && sed -i -E "s|^_tag=.*|_tag=${newtag}|" "${D}/PKGBUILD"
 sed -i -E "s|^CURRENT=.*|CURRENT=${latest}|" "${D}/upstream.env"
 
 if [ -n "${PATCHES_REPO}" ]; then
