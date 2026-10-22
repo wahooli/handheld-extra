@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC
+ "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+<!--
+  The two storage actions from Valve's org.valve.steamos.policy, which defines
+  one per helper in jupiter-hw-support. The IDs and exec paths are Valve's, so
+  the helpers' own `pkexec` finds them.
+
+  Valve defaults these to yes for anyone; here they need an admin. A distro
+  that wants the Steam UI to format without a prompt grants them to its session
+  user in a polkit rule (the gamescope session has no polkit agent to answer one).
+-->
+<policyconfig>
+  <vendor>handheld-extra</vendor>
+  <vendor_url>https://github.com/wahooli/handheld-extra</vendor_url>
+
+  <action id="org.valve.policykit.steamos.pkexec.run-steamos-polkit-helpers-steamos-format-sdcard">
+    <description>Format the SD card</description>
+    <message>Authentication is required to format the SD card</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/bin/steamos-polkit-helpers/steamos-format-sdcard</annotate>
+  </action>
+
+  <action id="org.valve.policykit.steamos.pkexec.run-steamos-polkit-helpers-steamos-format-device">
+    <description>Format a storage device</description>
+    <message>Authentication is required to format a storage device</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/bin/steamos-polkit-helpers/steamos-format-device</annotate>
+  </action>
+</policyconfig>

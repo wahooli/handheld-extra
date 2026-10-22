@@ -20,7 +20,9 @@ export const TWEAKS: Tweak[] = [
     ],
   },
 ];
-export const FRAMEGEN_TWEAKS = ["noWsi", "safePreempt"];
+// Not noWsi: through XWayland, lsfg-vk's 2x output topped out at 80 fps on a
+// 120 Hz panel (two refreshes out of three); with gamescope WSI it reaches 120.
+export const FRAMEGEN_TWEAKS = ["safePreempt"];
 
 export interface FexPreset { key: string; label: string; description: string; env: [string, string][] }
 
@@ -168,9 +170,19 @@ export const FEX_OPTIONS: FexOption[] = [
 ];
 const FEX_EXTRAS = FEX_OPTIONS.map((o) => o.env).filter((env) => !FEX_FLAGS.includes(env));
 
-const FRAME_CAP_VARS = ["DXVK_FRAME_RATE", "VKD3D_FRAME_RATE"];
+// DXVK dropped DXVK_FRAME_RATE (dae35be7e, 2025-11): its cap is a config option
+// now, set through DXVK_CONFIG. One option per API, because the unified
+// dxvk.maxFrameRate (3db36db2e, 2026-06-09) is newer than the DXVK in Proton 11
+// (a6764047e), which ignores it. The `;` between them needs the quotes. The older
+// forms are still read, so their launch options are rewritten on the next launch.
+const LEGACY_DXVK_CAP = "DXVK_FRAME_RATE";
+const VKD3D_CAP = "VKD3D_FRAME_RATE";
+const DXVK_CONFIG = "DXVK_CONFIG";
+const DXVK_CAP = /^"?(?:dxvk\.maxFrameRate=(\d+)|dxgi\.maxFrameRate=(\d+);d3d9\.maxFrameRate=\2)"?$/;
+const dxvkCapConfig = (fps: number) => `"dxgi.maxFrameRate=${fps};d3d9.maxFrameRate=${fps}"`;
 const MANAGED_VARS = new Set([
-  ...FRAME_CAP_VARS,
+  LEGACY_DXVK_CAP,
+  VKD3D_CAP,
   ...TWEAKS.flatMap((t) => t.env.map(([name]) => name)),
   ...FEX_OPTIONS.map((o) => o.env),
 ]);
@@ -230,7 +242,9 @@ const splitLaunchOptions = (options: string) => {
   const other: string[] = [];
   for (const token of tokens) {
     const match = ASSIGNMENT.exec(token);
-    if (match && MANAGED_VARS.has(match[1])) managed.set(match[1], match[2]);
+    // A DXVK_CONFIG is ours only when it holds nothing but the cap.
+    const ours = match && (MANAGED_VARS.has(match[1]) || (match[1] === DXVK_CONFIG && DXVK_CAP.test(match[2])));
+    if (ours) managed.set(match[1], match[2]);
     else other.push(token);
   }
   return { managed, other, cores, suffix, hasCommand: at >= 0 };
@@ -248,7 +262,10 @@ export const readTweaks = (options: string): LaunchTweaks => {
   for (const tweak of TWEAKS) {
     flags[tweak.key] = tweak.env.every(([name, value]) => managed.get(name) === value);
   }
-  const cap = FRAME_CAP_VARS.map((name) => Number(managed.get(name))).find((fps) => fps > 0);
+  const dxvk = DXVK_CAP.exec(managed.get(DXVK_CONFIG) ?? "");
+  const cap = [managed.get(VKD3D_CAP), dxvk?.[1] ?? dxvk?.[2], managed.get(LEGACY_DXVK_CAP)]
+    .map(Number)
+    .find((fps) => fps > 0);
   const fexFlags: Record<string, string> = {};
   for (const option of FEX_OPTIONS) {
     const value = managed.get(option.env);
@@ -257,13 +274,26 @@ export const readTweaks = (options: string): LaunchTweaks => {
   return { flags, frameCap: cap ?? 0, fex: readFex(managed), fexFlags, cores };
 };
 
+// The cap is there, but in a form that Proton 11's DXVK ignores.
+export const hasStaleFrameCap = (options: string) => {
+  const { managed } = splitLaunchOptions(options);
+  const dxvk = managed.get(DXVK_CONFIG);
+  return managed.has(LEGACY_DXVK_CAP) || (dxvk !== undefined && !DXVK_CAP.exec(dxvk)?.[2]);
+};
+
 export const fpsText = (fps: number) => String(Math.round(fps * 100) / 100);
 
 export const writeTweaks = (options: string, tweaks: LaunchTweaks): string => {
   const { other, suffix, hasCommand } = splitLaunchOptions(options);
   const assignments: string[] = [];
   if (tweaks.frameCap > 0) {
-    for (const name of FRAME_CAP_VARS) assignments.push(`${name}=${fpsText(tweaks.frameCap)}`);
+    // DXVK parses an integer; rounding down keeps the base rate under the cap. A
+    // DXVK_CONFIG of the user's own is left alone, and with it DXVK's cap: a second
+    // assignment would silently replace one of them.
+    if (!other.some((token) => token.startsWith(`${DXVK_CONFIG}=`))) {
+      assignments.push(`${DXVK_CONFIG}=${dxvkCapConfig(Math.floor(tweaks.frameCap))}`);
+    }
+    assignments.push(`${VKD3D_CAP}=${fpsText(tweaks.frameCap)}`);
   }
   for (const tweak of TWEAKS) {
     if (!tweaks.flags[tweak.key]) continue;

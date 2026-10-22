@@ -15,6 +15,7 @@ import {
   TWEAKS,
   Tweak,
   fpsText,
+  hasStaleFrameCap,
   launchOptionsOf,
   readTweaks,
   runningGame,
@@ -95,7 +96,7 @@ export const syncFrameCap = async (appid: string) => {
   if (options === null) return;
   const tweaks = readTweaks(options);
   const frameCap = frameCapFor(cap.cap, reply.profile.multiplier, cap.refresh);
-  if (tweaks.frameCap !== frameCap) {
+  if (tweaks.frameCap !== frameCap || hasStaleFrameCap(options)) {
     SteamClient.Apps.SetAppLaunchOptions(Number(appid), writeTweaks(options, { ...tweaks, frameCap }));
   }
 };
@@ -323,11 +324,6 @@ export function FrameGenTab() {
             <Note error>{status.configError}</Note>
           </PanelSectionRow>
         )}
-        {!status.dll && (
-          <PanelSectionRow>
-            <Note>lsfg-vk.dll was not found. Install Lossless Scaling from Steam.</Note>
-          </PanelSectionRow>
-        )}
 
         {!game ? (
           <PanelSectionRow>
@@ -454,7 +450,7 @@ export function FrameGenTab() {
             <PanelSectionRow>
               <Note>
                 Turning frame generation on or off takes effect the next time the game starts, and
-                also switches gamescope WSI off and turnip safe preemption on for the game, or back.
+                also switches turnip safe preemption on for the game, or back.
                 The base frame cap is for DXVK and vkd3d-proton games and applies the next time the
                 game starts. Other setting changes apply live.
               </Note>

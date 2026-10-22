@@ -1,0 +1,24 @@
+pkgname=f3
+pkgver=10.0
+pkgrel=1
+pkgdesc='Fight Flash Fraud: test flash cards for their real capacity (f3probe, f3fix, f3brew)'
+arch=(aarch64)
+url='https://github.com/AltraMayor/f3'
+license=(GPL-3.0-only)
+depends=(glibc parted systemd-libs)
+makedepends=(gcc make systemd)
+source=("${pkgname}-${pkgver}.tar.gz::${url}/archive/v${pkgver}.tar.gz")
+sha256sums=(SKIP)
+
+# Not in Arch Linux ARM. jupiter-hw-support-storage needs f3probe: SteamOS's
+# format-device.sh runs `f3probe --destructive` on the card before formatting
+# it, to catch fakes that claim more capacity than they have.
+
+build() {
+  make -C "${pkgname}-${pkgver}" all extra
+}
+
+package() {
+  make -C "${pkgname}-${pkgver}" DESTDIR="${pkgdir}" PREFIX=/usr install install-extra
+  install -Dm644 "${pkgname}-${pkgver}/LICENSE" "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
+}

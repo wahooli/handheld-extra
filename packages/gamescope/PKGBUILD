@@ -1,6 +1,6 @@
 pkgname=gamescope
 pkgver=20261014.ec7eda6b
-pkgrel=2
+pkgrel=3
 pkgdesc='SteamOS session compositing window manager (OGC fork + armada handheld patches)'
 arch=(aarch64)
 url='https://github.com/OpenGamingCollective/gamescope'
@@ -118,6 +118,13 @@ prepare() {
   done
   echo "::  applied ${applied} armada patches (${fuzzed} needed fuzz)"
 
+  # Our own fixes, on top of armada's. No fuzz: if the fork moves under one,
+  # it has to be looked at, not silently re-placed.
+  for f in "${startdir}"/patches/*.patch; do
+    [ -e "${f}" ] || continue
+    patch -p1 --batch --forward -F0 < "${f}" || { echo "::  FAILED: local ${f##*/}"; return 1; }
+    echo "::  applied local: ${f##*/}"
+  done
 }
 
 build() {

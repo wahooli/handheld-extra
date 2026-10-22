@@ -1,0 +1,47 @@
+From: Waltteri Hooli <1420194+wahooli@users.noreply.github.com>
+Subject: [PATCH] main: stop the 2-second cloud status poll writing logs
+
+The frontend calls emudeck("cloud_decky_check_status") every 2 s for as long
+as Decky runs. Each call logged the full command line at INFO (into the
+journal through the plugin loader) and rewrote ~/.config/EmuDeck/logs/decky.log
+— about 43,000 of each a day, on flash. With EmuDeck's backend missing, as on
+a fresh install, every one of them was also a failed python3 spawn.
+
+Return early when backend/api.py does not exist (the caller got "" before as
+well, from the failed run). When it does, the poll still runs but no longer
+logs or rewrites decky.log; every other command logs as before.
+
+---
+--- a/main.py
++++ b/main.py
+@@ -45,17 +45,29 @@
+ 
+     async def emudeck(self, command):
+ 
++        # Without EmuDeck's backend there is nothing to run. The UI polls
++        # cloud_decky_check_status every 2 s regardless, so return before a
++        # subprocess, a log line and a decky.log rewrite on every poll.
++        if not (emudeck_backend / "api.py").exists():
++            return ""
++        poll = command == "cloud_decky_check_status"
++
+         if os.name == 'nt':
+             bash_command = f"python {emudeck_backend}/api.py {command}"
+         else:
+             bash_command = f"python3 {emudeck_backend}/api.py {command}"
+ 
+-        log(bash_command)
++        if not poll:
++            log(bash_command)
+ 
+         result = subprocess.run(bash_command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+ 
+         cleaned_stdout = result.stdout.strip()
+ 
++        # The status poll keeps decky.log as the last real command left it.
++        if poll:
++            return cleaned_stdout
++
+         os.makedirs(emudeck_logs, exist_ok=True)
+ 
+         # Escribir el resultado en un archivo de log

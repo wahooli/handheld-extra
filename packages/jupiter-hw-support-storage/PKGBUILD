@@ -1,0 +1,83 @@
+pkgname=jupiter-hw-support-storage
+pkgver=3.7.20251020.1
+pkgrel=1
+_tag=jupiter-3.7-20251020.1
+_upstream=jupiter-hw-support
+pkgdesc="SteamOS SD card format and automount helpers (Valve's jupiter-hw-support, storage only, with armada's guards)"
+arch=(any)
+url='https://github.com/evlav/jupiter-hw-support'
+license=(MIT)
+depends=(bash coreutils e2fsprogs exfatprogs jq parted polkit procps-ng systemd udisks2 util-linux)
+optdepends=('f3: test a card for fake capacity before formatting it')
+source=("${_upstream}-${_tag}.tar.gz::${url}/archive/refs/tags/${_tag}.tar.gz"
+        org.valve.steamos.storage.policy)
+sha256sums=('b1e650fedb33d23151213047ac8e65dd824c80c4568bde8bc6431ce5638b6e00'
+            'a69a31f26dd57b5c79104268b7b73b50d7b586646b5687545436396ff1e747fa')
+
+# The Steam client formats an SD card through
+# /usr/bin/steamos-polkit-helpers/steamos-format-sdcard when steamos-manager is
+# not on the bus, and finds mounted cards through udisks2. Valve ships those
+# helpers in jupiter-hw-support next to Deck firmware, fan and amp tools that
+# have no business on other hardware, so only the storage subset is installed.
+#
+# armada's patches (scripts/fetch-patch-set.sh) are not optional: they make the
+# format and automount scripts refuse any disk that is not an SD card, or that
+# holds /, /var or /boot. Valve's original formats /dev/mmcblk0 unconditionally,
+# which on a device booted from its SD card is the running system.
+#
+# _tag stays on armada's pin, not Valve's newest tag: the patches are rebased
+# against it.
+
+_patches=()
+for _p in "${startdir}"/patch-set/*.patch; do
+  [ -e "${_p}" ] && _patches+=("$(basename "${_p}")")
+done
+unset _p
+
+prepare() {
+  cd "${_upstream}-${_tag}"
+
+  [ ${#_patches[@]} -gt 0 ] || {
+    echo "::  no patches in ${startdir}/patch-set -- run scripts/fetch-patch-set.sh ${pkgname}"
+    echo "::  refusing to build: without armada's guards, format-sdcard.sh formats"
+    echo "::  /dev/mmcblk0 even when the system is running from it."
+    return 1
+  }
+  local p f
+  for p in "${_patches[@]}"; do
+    f="${startdir}/patch-set/${p}"
+    [ -f "${f}" ] || { echo "::  missing patch: ${p} (run scripts/fetch-patch-set.sh ${pkgname})"; return 1; }
+    if ! patch -p1 --batch --forward -F0 --dry-run --quiet < "${f}"; then
+      echo "::  FAILED: ${p}"
+      echo "::  armada rebased onto a different upstream tag, or _tag moved."
+      return 1
+    fi
+    patch -p1 --batch --forward -F0 --quiet < "${f}"
+    echo "::  applied: ${p}"
+  done
+
+  # f3 is an optdepend (it is built here too, and makepkg --syncdeps cannot
+  # install a sibling package). Without f3probe, `f3probe --destructive` fails
+  # with 127 and format-device.sh takes that for a FAKE card: it reformats it
+  # as exFAT and reports exit 14. Skip the test instead.
+  sed -i 's/^if \[\[ "\$RUN_VALIDATION" != "0" \]\]; then$/command -v f3probe >\/dev\/null || RUN_VALIDATION=0\n&/' \
+    usr/lib/hwsupport/format-device.sh
+  grep -q '^command -v f3probe' usr/lib/hwsupport/format-device.sh \
+    || { echo "::  format-device.sh moved: the f3probe guard did not apply"; return 1; }
+}
+
+package() {
+  cd "${_upstream}-${_tag}"
+  local f
+  install -Dm644 usr/lib/hwsupport/common-functions "${pkgdir}/usr/lib/hwsupport/common-functions"
+  for f in block-device-event.sh steamos-automount.sh format-device.sh format-sdcard.sh; do
+    install -Dm755 "usr/lib/hwsupport/${f}" "${pkgdir}/usr/lib/hwsupport/${f}"
+  done
+  install -Dm644 usr/lib/udev/rules.d/99-steamos-automount.rules \
+    "${pkgdir}/usr/lib/udev/rules.d/99-steamos-automount.rules"
+  for f in steamos-format-device steamos-format-sdcard; do
+    install -Dm755 "usr/bin/steamos-polkit-helpers/${f}" "${pkgdir}/usr/bin/steamos-polkit-helpers/${f}"
+  done
+  install -Dm644 "${srcdir}/org.valve.steamos.storage.policy" \
+    "${pkgdir}/usr/share/polkit-1/actions/org.valve.steamos.storage.policy"
+}

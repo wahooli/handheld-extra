@@ -101,14 +101,16 @@ const TABS: { id: Tab; label: string; short: string }[] = [
 let lastTab: Tab = "performance";
 
 function Content() {
-  const [lsfgInstalled, setLsfgInstalled] = useState(false);
+  const [lsfgReady, setLsfgReady] = useState(false);
   const [settingsAvailable, setSettingsAvailable] = useState(false);
   const [tab, setTab] = useState<Tab>(lastTab);
 
   useEffect(() => {
     let live = true;
     void lsfgStatus().then((reply) => {
-      if (live) setLsfgInstalled(reply.ok && Boolean(reply.installed));
+      // The layer does nothing without Lossless Scaling's lsfg-vk.dll from Steam.
+      // A broken conf.toml hides the DLL too, so keep the tab to show that error.
+      if (live) setLsfgReady(reply.ok && Boolean(reply.installed) && Boolean(reply.dll || reply.configError));
     });
     void settingsStatus().then((reply) => {
       if (live) setSettingsAvailable(reply.ok);
@@ -123,7 +125,7 @@ function Content() {
     setTab(next);
   };
 
-  const tabs = TABS.filter(({ id }) => (id !== "framegen" || lsfgInstalled) && (id !== "system" || settingsAvailable));
+  const tabs = TABS.filter(({ id }) => (id !== "framegen" || lsfgReady) && (id !== "system" || settingsAvailable));
   const active: Tab = tabs.some(({ id }) => id === tab) ? tab : "performance";
 
   return (
