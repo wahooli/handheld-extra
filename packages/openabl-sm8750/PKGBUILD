@@ -1,0 +1,53 @@
+pkgname=openabl-sm8750
+pkgver=1.1
+pkgrel=1
+pkgdesc='OpenABL bootloader for SM8750 (AYN Odin 3), kept current on abl_a/abl_b'
+arch=(aarch64)
+url='https://github.com/OpenHandheldCollective/OpenABL'
+license=('GPL-3.0-or-later WITH GPL-3.0-linking-source-exception')
+depends=(bash coreutils util-linux)
+makedepends=(curl git)
+# The ELF is a signed bootloader image: makepkg's strip would rewrite it.
+options=(!strip !debug)
+source=("openabl-v${pkgver}.tar.gz::${url}/releases/download/v${pkgver}/openabl-v${pkgver}.tar.gz"
+        openabl-update
+        openabl-update.hook
+        test-openabl-update.sh)
+sha256sums=(SKIP SKIP SKIP SKIP)
+
+# OpenABL is flashed once from Android (the image's p1 openabl/ folder); after
+# that, upgrading this package rewrites abl_a and abl_b in place. openabl-update
+# only writes over an older OpenABL it recognises by hash, never over a stock or
+# ROCKNIX ABL. To stay on the installed version, add IgnorePkg = openabl-sm8750.
+# Source: ${url}/releases (openabl-v<ver>-source.tar.xz).
+
+build() {
+  # Every OpenABL release's SM8750 image, so openabl-update can tell an older
+  # OpenABL on the device from an ABL it must not touch.
+  local tag
+  printf '# version\tsize\tsha256\n' > releases.tsv
+  for tag in $(git ls-remote --tags --refs "${url}.git" \
+               | sed -n 's|.*refs/tags/\(v[0-9][0-9.]*\)$|\1|p' | sort -V); do
+    curl -fsSL -o "abl-${tag}.elf" "${url}/releases/download/${tag}/abl_signed-SM8750.elf" || continue
+    printf '%s\t%s\t%s\n' "${tag#v}" "$(stat -c %s "abl-${tag}.elf")" \
+      "$(sha256sum "abl-${tag}.elf" | cut -d' ' -f1)" >> releases.tsv
+  done
+}
+
+check() {
+  (cd "openabl-v${pkgver}/SM8750" && sha256sum -c abl_signed-SM8750.elf.sha256)
+  local hash
+  hash=$(sha256sum "openabl-v${pkgver}/SM8750/abl_signed-SM8750.elf" | cut -d' ' -f1)
+  grep -qP "^${pkgver//./\\.}\t\d+\t${hash}$" releases.tsv \
+    || { echo "releases.tsv does not list this OpenABL ${pkgver} image" >&2; return 1; }
+  bash test-openabl-update.sh openabl-update
+}
+
+package() {
+  install -Dm644 "openabl-v${pkgver}/SM8750/abl_signed-SM8750.elf"{,.sha256} releases.tsv \
+    -t "${pkgdir}/usr/lib/openabl/"
+  install -Dm755 openabl-update "${pkgdir}/usr/bin/openabl-update"
+  install -Dm644 openabl-update.hook "${pkgdir}/usr/share/libalpm/hooks/95-openabl-update.hook"
+  install -Dm644 "openabl-v${pkgver}/LICENSE" -t "${pkgdir}/usr/share/licenses/${pkgname}/"
+  cp -r "openabl-v${pkgver}/LICENSES" "${pkgdir}/usr/share/licenses/${pkgname}/"
+}

@@ -1,0 +1,99 @@
+#!/usr/bin/env bash
+# Update OpenABL on abl_a and abl_b from the packaged image, only over an older
+# OpenABL. The ABL is what boots Linux here, so the rules are strict:
+#
+#   * only on an SM8750, by the device tree; the image build and other devices
+#     are a quiet no-op;
+#   * only over slots whose contents hash to an OpenABL release for this SoC
+#     (releases.tsv, every release, generated when the package is built). A
+#     stock ABL, a ROCKNIX ABL or anything unrecognised is left alone, and so is
+#     an OpenABL newer than the package's. Both slots are checked before either
+#     is written;
+#   * abl_a first, then abl_b, each synced and read back before the next.
+#
+# After armada's armada-abl-update, which does the same for ROCKNIX's ABL.
+#
+#   openabl-update           update if needed
+#   openabl-update --check   say what it would do, write nothing
+set -euo pipefail
+
+SOC=SM8750
+DIR="${OPENABL_DIR:-/usr/lib/openabl}"
+COMPATIBLE="${OPENABL_COMPATIBLE:-/sys/firmware/devicetree/base/compatible}"
+ABL_A="${OPENABL_ABL_A:-/dev/disk/by-partlabel/abl_a}"
+ABL_B="${OPENABL_ABL_B:-/dev/disk/by-partlabel/abl_b}"
+LOCK="${OPENABL_LOCK:-/run/openabl-update.lock}"
+PAYLOAD="${DIR}/abl_signed-${SOC}.elf"
+CATALOG="${DIR}/releases.tsv"
+
+log() { echo "openabl-update: $*"; }
+die() { echo "openabl-update: $*" >&2; exit 1; }
+
+check=0
+case "${1:-}" in
+    --check) check=1 ;;
+    "") ;;
+    *) die "usage: openabl-update [--check]" ;;
+esac
+
+if ! tr '\0' '\n' < "${COMPATIBLE}" 2>/dev/null | grep -qx "qcom,${SOC,,}"; then
+    log "not an ${SOC} device, nothing to do"
+    exit 0
+fi
+
+prefix_hash() { head -c "$2" "$1" | sha256sum | cut -d' ' -f1; }
+
+# The OpenABL release a file or partition starts with, or nothing.
+identify() {
+    local version size hash
+    while read -r version size hash; do
+        [ "$(prefix_hash "$1" "${size}")" = "${hash}" ] && { echo "${version}"; return 0; }
+    done < <(grep -v '^#' "${CATALOG}")
+}
+
+part_size() { if [ -b "$1" ]; then blockdev --getsize64 "$1"; else stat -c %s "$1"; fi; }
+
+payload_size=$(stat -c %s "${PAYLOAD}")
+payload_hash=$(sha256sum "${PAYLOAD}" | cut -d' ' -f1)
+target=$(identify "${PAYLOAD}")
+[ -n "${target}" ] || die "${PAYLOAD} is not an OpenABL release listed in ${CATALOG}"
+
+declare -A part=([a]="$(readlink -f "${ABL_A}")" [b]="$(readlink -f "${ABL_B}")")
+[ "${part[a]}" != "${part[b]}" ] || die "abl_a and abl_b resolve to the same partition"
+for slot in a b; do
+    p=${part[${slot}]}
+    [ -e "${p}" ] || die "no abl_${slot} partition"
+    [ -b "${p}" ] || [ "${OPENABL_ALLOW_FILES:-0}" = 1 ] || die "abl_${slot} (${p}) is not a block device"
+    [ "$(part_size "${p}")" -ge "${payload_size}" ] || die "abl_${slot} is smaller than OpenABL ${target}"
+done
+
+stale=()
+for slot in a b; do
+    p=${part[${slot}]}
+    [ "$(prefix_hash "${p}" "${payload_size}")" = "${payload_hash}" ] && continue
+    installed=$(identify "${p}")
+    [ -n "${installed}" ] ||
+        die "abl_${slot} is not a known OpenABL (stock, ROCKNIX or unknown); leaving both slots alone"
+    [ "$(printf '%s\n%s\n' "${installed}" "${target}" | sort -V | tail -1)" = "${target}" ] ||
+        die "abl_${slot} has OpenABL ${installed}, newer than ${target}; leaving both slots alone"
+    log "abl_${slot}: OpenABL ${installed} -> ${target}"
+    stale+=("${slot}")
+done
+if [ ${#stale[@]} -eq 0 ]; then
+    log "OpenABL ${target} is already on abl_a and abl_b"
+    exit 0
+fi
+[ "${check}" = 0 ] || exit 0
+
+exec 9>"${LOCK}"
+flock -n 9 || die "another openabl-update is running"
+for slot in "${stale[@]}"; do
+    p=${part[${slot}]}
+    dd if="${PAYLOAD}" of="${p}" bs=4096 conv=fsync,notrunc status=none ||
+        die "writing abl_${slot} failed; the device may need recovery from Android or EDL"
+    # Drop the cached copy so the readback comes from the device.
+    if [ -b "${p}" ]; then blockdev --flushbufs "${p}"; fi
+    [ "$(prefix_hash "${p}" "${payload_size}")" = "${payload_hash}" ] ||
+        die "abl_${slot} reads back wrong after the write; the device may need recovery from Android or EDL"
+    log "abl_${slot}: OpenABL ${target} written and verified"
+done
