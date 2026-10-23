@@ -24,6 +24,29 @@ export const TWEAKS: Tweak[] = [
 // 120 Hz panel (two refreshes out of three); with gamescope WSI it reaches 120.
 export const FRAMEGEN_TWEAKS = ["safePreempt"];
 
+// vulkan-freedreno installs turnip-perf and vulkan-freedreno-devel turnip-devel;
+// each points VK_DRIVER_FILES at its own build and execs the rest of the line.
+export interface TurnipDriver { key: string; label: string; description: string; wrapper: string }
+
+export const TURNIP_STABLE = "";
+
+export const TURNIP_DRIVERS: TurnipDriver[] = [
+  { key: TURNIP_STABLE, label: "Stable", description: "The release driver every game uses by default", wrapper: "" },
+  {
+    key: "perf",
+    label: "Performance",
+    description: "The release driver with performance patches",
+    wrapper: "turnip-perf",
+  },
+  {
+    key: "devel",
+    label: "Devel",
+    description: "Built from Mesa main twice a week: newer fixes, possibly newer bugs",
+    wrapper: "turnip-devel",
+  },
+];
+const TURNIP_WRAPPERS = new Map(TURNIP_DRIVERS.filter((d) => d.wrapper).map((d) => [d.wrapper, d.key]));
+
 export interface FexPreset { key: string; label: string; description: string; env: [string, string][] }
 
 const FEX_FLAGS = [
@@ -175,14 +198,18 @@ const FEX_EXTRAS = FEX_OPTIONS.map((o) => o.env).filter((env) => !FEX_FLAGS.incl
 // dxvk.maxFrameRate (3db36db2e, 2026-06-09) is newer than the DXVK in Proton 11
 // (a6764047e), which ignores it. The `;` between them needs the quotes. The older
 // forms are still read, so their launch options are rewritten on the next launch.
+// Native Vulkan games have neither, so MangoHud's probe layer, which sits above
+// the frame generator, caps their real frames too (mangohud patch 0005).
 const LEGACY_DXVK_CAP = "DXVK_FRAME_RATE";
 const VKD3D_CAP = "VKD3D_FRAME_RATE";
+const PROBE_CAP = "MANGOHUD_PROBE_FPS_LIMIT";
 const DXVK_CONFIG = "DXVK_CONFIG";
 const DXVK_CAP = /^"?(?:dxvk\.maxFrameRate=(\d+)|dxgi\.maxFrameRate=(\d+);d3d9\.maxFrameRate=\2)"?$/;
 const dxvkCapConfig = (fps: number) => `"dxgi.maxFrameRate=${fps};d3d9.maxFrameRate=${fps}"`;
 const MANAGED_VARS = new Set([
   LEGACY_DXVK_CAP,
   VKD3D_CAP,
+  PROBE_CAP,
   ...TWEAKS.flatMap((t) => t.env.map(([name]) => name)),
   ...FEX_OPTIONS.map((o) => o.env),
 ]);
@@ -199,6 +226,7 @@ export interface LaunchTweaks {
   fex: string;
   fexFlags: Record<string, string>;
   cores: string;
+  turnip: string;
 }
 export interface Game { appid: string; name: string }
 
@@ -238,6 +266,9 @@ const splitLaunchOptions = (options: string) => {
     (token, i) => token === TASKSET && CPU_LIST_FLAGS.includes(tokens[i + 1]) && CPU_LIST.test(tokens[i + 2] ?? ""),
   );
   if (pin >= 0) cores = tokens.splice(pin, 3)[2];
+  let turnip = TURNIP_STABLE;
+  const wrap = tokens.findIndex((token) => TURNIP_WRAPPERS.has(token));
+  if (wrap >= 0) turnip = TURNIP_WRAPPERS.get(tokens.splice(wrap, 1)[0]) ?? TURNIP_STABLE;
   const managed = new Map<string, string>();
   const other: string[] = [];
   for (const token of tokens) {
@@ -247,7 +278,7 @@ const splitLaunchOptions = (options: string) => {
     if (ours) managed.set(match[1], match[2]);
     else other.push(token);
   }
-  return { managed, other, cores, suffix, hasCommand: at >= 0 };
+  return { managed, other, cores, turnip, suffix, hasCommand: at >= 0 };
 };
 
 const readFex = (managed: Map<string, string>): string => {
@@ -257,13 +288,13 @@ const readFex = (managed: Map<string, string>): string => {
 };
 
 export const readTweaks = (options: string): LaunchTweaks => {
-  const { managed, cores } = splitLaunchOptions(options);
+  const { managed, cores, turnip } = splitLaunchOptions(options);
   const flags: Record<string, boolean> = {};
   for (const tweak of TWEAKS) {
     flags[tweak.key] = tweak.env.every(([name, value]) => managed.get(name) === value);
   }
   const dxvk = DXVK_CAP.exec(managed.get(DXVK_CONFIG) ?? "");
-  const cap = [managed.get(VKD3D_CAP), dxvk?.[1] ?? dxvk?.[2], managed.get(LEGACY_DXVK_CAP)]
+  const cap = [managed.get(VKD3D_CAP), dxvk?.[1] ?? dxvk?.[2], managed.get(PROBE_CAP), managed.get(LEGACY_DXVK_CAP)]
     .map(Number)
     .find((fps) => fps > 0);
   const fexFlags: Record<string, string> = {};
@@ -271,14 +302,19 @@ export const readTweaks = (options: string): LaunchTweaks => {
     const value = managed.get(option.env);
     if (value !== undefined) fexFlags[option.env] = value;
   }
-  return { flags, frameCap: cap ?? 0, fex: readFex(managed), fexFlags, cores };
+  return { flags, frameCap: cap ?? 0, fex: readFex(managed), fexFlags, cores, turnip };
 };
 
-// The cap is there, but in a form that Proton 11's DXVK ignores.
+// The cap is there, but in a form that Proton 11's DXVK ignores, or from before
+// the probe cap, so a native Vulkan game would ignore it.
 export const hasStaleFrameCap = (options: string) => {
   const { managed } = splitLaunchOptions(options);
   const dxvk = managed.get(DXVK_CONFIG);
-  return managed.has(LEGACY_DXVK_CAP) || (dxvk !== undefined && !DXVK_CAP.exec(dxvk)?.[2]);
+  return (
+    managed.has(LEGACY_DXVK_CAP) ||
+    (dxvk !== undefined && !DXVK_CAP.exec(dxvk)?.[2]) ||
+    (managed.has(VKD3D_CAP) && !managed.has(PROBE_CAP))
+  );
 };
 
 export const fpsText = (fps: number) => String(Math.round(fps * 100) / 100);
@@ -294,6 +330,7 @@ export const writeTweaks = (options: string, tweaks: LaunchTweaks): string => {
       assignments.push(`${DXVK_CONFIG}=${dxvkCapConfig(Math.floor(tweaks.frameCap))}`);
     }
     assignments.push(`${VKD3D_CAP}=${fpsText(tweaks.frameCap)}`);
+    assignments.push(`${PROBE_CAP}=${fpsText(tweaks.frameCap)}`);
   }
   for (const tweak of TWEAKS) {
     if (!tweaks.flags[tweak.key]) continue;
@@ -313,7 +350,8 @@ export const writeTweaks = (options: string, tweaks: LaunchTweaks): string => {
   const lead = other.findIndex((token) => !ASSIGNMENT.test(token));
   const split = lead < 0 ? other.length : lead;
   const pin = tweaks.cores ? [TASKSET, "-c", tweaks.cores] : [];
-  const prefix = [...assignments, ...other.slice(0, split), ...pin, ...other.slice(split)];
+  const wrapper = TURNIP_DRIVERS.find((d) => d.key === tweaks.turnip)?.wrapper;
+  const prefix = [...assignments, ...other.slice(0, split), ...pin, ...(wrapper ? [wrapper] : []), ...other.slice(split)];
   if (prefix.length === 0) return hasCommand && suffix ? `${COMMAND} ${suffix}` : suffix;
   return [...prefix, COMMAND, suffix].filter(Boolean).join(" ");
 };

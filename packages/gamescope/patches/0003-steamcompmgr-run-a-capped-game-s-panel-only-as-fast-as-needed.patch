@@ -1,0 +1,72 @@
+From: handheld-extra
+Subject: [PATCH] steamcompmgr: run a capped game's panel only as fast as needed
+
+Two changes to how _update_app_target_refresh_cycle() picks the panel rate on
+a display with discrete rates (the AYN Odin 3: 60 and 120 Hz).
+
+1. Steam's per-game Refresh Rate setting arrives with ONLY_CHANGE_REFRESH_RATE
+   but went through the frame-limit rule, "the highest valid rate the target
+   divides into", so picking 60 Hz left the panel at 120. A refresh-rate-only
+   request now uses the exact rate when the panel has it.
+
+2. For a frame limit, the new refresh_prefer_lowest ConVar (on by default)
+   takes the lowest such rate instead of the highest: a 30 or 60 fps limit runs
+   the panel at 60 Hz, 40 stays at 120. Each frame still shows for whole
+   refreshes; the panel just does not refresh twice as often as it needs to.
+   Set it to 0 for upstream's choice.
+
+The second is what frame generation needs. lsfg-vk presents each real frame
+and its generated one back to back and leaves the spacing to the display, so
+its output only paces evenly when it equals the refresh rate: 30 fps x2 on a
+120 Hz panel showed as 8.3 ms / 25 ms pairs (AYN Odin 3, 2026-10-23). With a
+Steam limit of 60 the panel now runs at 60 Hz and the pairs are even.
+
+---
+--- a/src/steamcompmgr.cpp
++++ b/src/steamcompmgr.cpp
+@@ -1264,6 +1264,8 @@
+ bool g_nCombinedAppRefreshCycleChangeRefresh[gamescope::GAMESCOPE_SCREEN_TYPE_COUNT] = { true, true };
+ bool g_nCombinedAppRefreshCycleChangeFPS[gamescope::GAMESCOPE_SCREEN_TYPE_COUNT] = { true, true };
+ 
++gamescope::ConVar<bool> cv_refresh_prefer_lowest( "refresh_prefer_lowest", true, "For a frame limit, run the panel at the lowest valid rate the limit divides into instead of the highest." );
++
+ static void _update_app_target_refresh_cycle()
+ {
+ 	if ( !GetBackend()->GetCurrentConnector() )
+@@ -1290,15 +1292,27 @@
+ 	{
+ 		auto rates = GetBackend()->GetCurrentConnector()->GetValidDynamicRefreshRates();
+ 
+-		// Find highest mode to do refresh doubling with.
+-		for ( auto rate = rates.rbegin(); rate != rates.rend(); rate++ )
++		// A refresh-rate-only request is the user picking a rate, not a frame
++		// limit: use it as is when the panel has it, instead of doubling it.
++		if ( !g_nCombinedAppRefreshCycleChangeFPS[ type ] &&
++			 std::find( rates.begin(), rates.end(), uint32_t( target_fps ) ) != rates.end() )
++		{
++			g_nDynamicRefreshRate[ type ] = target_fps;
++			return;
++		}
++
++		// A rate the target divides into, so each frame shows for whole refreshes:
++		// the highest upstream, the lowest when refresh_prefer_lowest is on.
++		uint32_t uPicked = 0;
++		for ( uint32_t rate : rates )
+ 		{
+-			if (*rate % target_fps == 0)
+-			{
+-				g_nDynamicRefreshRate[ type ] = *rate;
+-				return;
+-			}
++			if ( rate % uint32_t( target_fps ) != 0 )
++				continue;
++			if ( !uPicked || ( cv_refresh_prefer_lowest ? rate < uPicked : rate > uPicked ) )
++				uPicked = rate;
+ 		}
++		if ( uPicked )
++			g_nDynamicRefreshRate[ type ] = uPicked;
+ 	}
+ }
+ 
+-- 
+2.55.0

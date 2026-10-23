@@ -10,6 +10,7 @@ import {
   Game,
   LaunchTweaks,
   readTweaks,
+  TURNIP_DRIVERS,
   writeTweaks,
 } from "./launchOptions";
 
@@ -19,9 +20,11 @@ interface FexSteamReply { ok: boolean; error?: string; config?: FexConfig | null
 interface Cluster { cpus: string; count: number; maxMhz: number }
 interface ClustersReply { ok: boolean; online: string; clusters: Cluster[] }
 interface CorePreset { data: string; label: string }
+interface TurnipReply { ok: boolean; installed: string[] }
 
 const fexSteamConfig = callable<[appid: string], FexSteamReply>("fex_steam_config");
 const cpuClusters = callable<[], ClustersReply>("cpu_clusters");
+const turnipDrivers = callable<[], TurnipReply>("turnip_drivers");
 
 const ALL_CORES = "";
 const FLAG_DEFAULT = "";
@@ -82,11 +85,15 @@ export function GameLaunchSettings({ game }: { game: Game }) {
   const [fexDefaults, setFexDefaults] = useState<FexDefaults>({});
   const [advanced, setAdvanced] = useState(advancedOpen);
   const [clusters, setClusters] = useState<Cluster[]>([]);
+  const [wrappers, setWrappers] = useState<string[]>([]);
 
   useEffect(() => {
     let live = true;
     void cpuClusters().then((reply) => {
       if (live && reply.ok) setClusters(reply.clusters);
+    });
+    void turnipDrivers().then((reply) => {
+      if (live && reply.ok) setWrappers(reply.installed);
     });
     return () => {
       live = false;
@@ -154,8 +161,30 @@ export function GameLaunchSettings({ game }: { game: Game }) {
     ? "Pinned to these cores. Under scx_cosmos, other work is kept off them."
     : "The game can run on any core";
 
+  // Offer what is installed, and keep showing the game's choice if its package went away.
+  const drivers = TURNIP_DRIVERS.filter(
+    (d) => !d.wrapper || wrappers.includes(d.wrapper) || d.key === tweaks.turnip,
+  );
+  const driver = TURNIP_DRIVERS.find((d) => d.key === tweaks.turnip);
+  const driverMissing = !!driver?.wrapper && !wrappers.includes(driver.wrapper);
+
   return (
     <>
+      {drivers.length > 1 && (
+        <PanelSectionRow>
+          <DropdownItem
+            label="Vulkan driver"
+            description={driverMissing ? `${driver?.label} is not installed; the game will not start` : driver?.description}
+            rgOptions={drivers.map((d) => ({
+              data: d.key,
+              label: d.wrapper && !wrappers.includes(d.wrapper) ? `${d.label} (not installed)` : d.label,
+            }))}
+            selectedOption={tweaks.turnip}
+            disabled={launchOptions === null}
+            onChange={(opt) => setTweaks({ ...tweaks, turnip: opt.data as string })}
+          />
+        </PanelSectionRow>
+      )}
       <PanelSectionRow>
         <DropdownItem
           label="FEX preset"

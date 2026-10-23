@@ -1,0 +1,83 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Waltteri Hooli <1420194+wahooli@users.noreply.github.com>
+Date: Mon, 21 Sep 2026 17:41:09 +0300
+Subject: [PATCH 3/5] tu: Add TU_DEBUG=deck_emu to advertise being a Steam Deck
+
+With TU_DEBUG=deck_emu the device reports the Steam Deck's vendor, device,
+name and driver ID.
+
+Origin: https://github.com/whitebelyash/mesa-unified branch turnip/gen8, "tu: Add DECK_EMU to advertise being a SteamDeck"
+---
+ src/freedreno/vulkan/tu_device.cc | 16 ++++++++++++++++
+ src/freedreno/vulkan/tu_util.cc   |  1 +
+ src/freedreno/vulkan/tu_util.h    |  1 +
+ 3 files changed, 18 insertions(+)
+
+diff --git a/src/freedreno/vulkan/tu_device.cc b/src/freedreno/vulkan/tu_device.cc
+index c317ed1..c869c43 100644
+--- a/src/freedreno/vulkan/tu_device.cc
++++ b/src/freedreno/vulkan/tu_device.cc
+@@ -1016,6 +1016,12 @@ tu_get_physical_device_properties_1_2(struct tu_physical_device *pdevice,
+    memset(p->driverName, 0, sizeof(p->driverName));
+    snprintf(p->driverName, VK_MAX_DRIVER_NAME_SIZE,
+             "turnip Mesa driver");
++
++   if (TU_DEBUG(DECK_EMU)) {
++      p->driverID = VK_DRIVER_ID_MESA_RADV;
++      memset(p->driverName, 0, sizeof(p->driverName));
++      snprintf(p->driverName, VK_MAX_DRIVER_NAME_SIZE, "radv");
++   }
+    memset(p->driverInfo, 0, sizeof(p->driverInfo));
+    snprintf(p->driverInfo, VK_MAX_DRIVER_INFO_SIZE,
+             "Mesa " PACKAGE_VERSION MESA_GIT_SHA1);
+@@ -1321,6 +1327,11 @@ tu_get_properties(struct tu_physical_device *pdevice,
+    props->deviceID = pdevice->dev_id.chip_id;
+    props->deviceType = VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU;
+ 
++   if (TU_DEBUG(DECK_EMU)) {
++      props->vendorID = 0x1002;
++      props->deviceID = 0x163F;
++   }
++
+    /* Vulkan 1.4 */
+    props->dynamicRenderingLocalReadDepthStencilAttachments = true;
+    props->dynamicRenderingLocalReadMultisampledAttachments = true;
+@@ -1335,6 +1346,11 @@ tu_get_properties(struct tu_physical_device *pdevice,
+    snprintf(props->deviceName, sizeof(props->deviceName), "%s",
+             (strlen(pdevice->instance->drirc.debug.force_vk_devicename) > 0) ?
+             pdevice->instance->drirc.debug.force_vk_devicename : pdevice->name);
++
++   if (TU_DEBUG(DECK_EMU)) {
++      snprintf(props->deviceName, sizeof(props->deviceName),
++               "AMD Custom GPU 0405 (RADV VANGOGH)");
++   }
+    memcpy(props->pipelineCacheUUID, pdevice->cache_uuid, VK_UUID_SIZE);
+ 
+    tu_get_physical_device_properties_1_1(pdevice, props);
+diff --git a/src/freedreno/vulkan/tu_util.cc b/src/freedreno/vulkan/tu_util.cc
+index 76e4f4a..6f437a4 100644
+--- a/src/freedreno/vulkan/tu_util.cc
++++ b/src/freedreno/vulkan/tu_util.cc
+@@ -57,6 +57,7 @@ static const struct debug_control tu_debug_options[] = {
+    { "forcecb", TU_DEBUG_FORCE_CONCURRENT_BINNING },
+    { "computeroundrobin", TU_DEBUG_COMPUTE_ROUND_ROBIN },
+    { "gmem_warmup", TU_DEBUG_GMEM_WARMUP },
++   { "deck_emu", TU_DEBUG_DECK_EMU },
+    { NULL, 0 }
+ };
+ 
+diff --git a/src/freedreno/vulkan/tu_util.h b/src/freedreno/vulkan/tu_util.h
+index c212db4..5a646bc 100644
+--- a/src/freedreno/vulkan/tu_util.h
++++ b/src/freedreno/vulkan/tu_util.h
+@@ -75,6 +75,7 @@ enum tu_debug_flags : uint64_t
+    TU_DEBUG_FORCE_CONCURRENT_BINNING = BITFIELD64_BIT(36),
+    TU_DEBUG_COMPUTE_ROUND_ROBIN      = BITFIELD64_BIT(37),
+    TU_DEBUG_GMEM_WARMUP              = BITFIELD64_BIT(38),
++   TU_DEBUG_DECK_EMU                 = BITFIELD64_BIT(39),
+ };
+ 
+ struct tu_env {
+-- 
+2.56.0
+

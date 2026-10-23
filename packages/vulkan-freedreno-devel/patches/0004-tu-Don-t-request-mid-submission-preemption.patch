@@ -1,0 +1,31 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Waltteri Hooli <1420194+wahooli@users.noreply.github.com>
+Date: Sun, 27 Sep 2026 20:41:47 +0300
+Subject: [PATCH 4/5] tu: Don't request mid-submission preemption
+
+On the Adreno X1-85 a switch in the middle of a submission loses work in
+flight. Leave MSM_SUBMITQUEUE_ALLOW_PREEMPT off unless TU_ALLOW_PREEMPT is
+set.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/freedreno/vulkan/tu_knl_drm_msm.cc | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/src/freedreno/vulkan/tu_knl_drm_msm.cc b/src/freedreno/vulkan/tu_knl_drm_msm.cc
+index 2f4bcf1..6e35dff 100644
+--- a/src/freedreno/vulkan/tu_knl_drm_msm.cc
++++ b/src/freedreno/vulkan/tu_knl_drm_msm.cc
+@@ -1404,7 +1404,8 @@ tu_knl_drm_msm_load(struct tu_instance *instance,
+    device->has_raytracing = tu_drm_get_param_or(fd, MSM_PARAM_RAYTRACING, &val, false);
+    device->has_sparse_prr = tu_drm_get_param_or(fd, MSM_PARAM_HAS_PRR, &val, false);
+ 
+-   device->has_preemption = msm_common_has_preemption(device->local_fd, device->submitqueue_priority_count / 2);
++   device->has_preemption = os_get_option("TU_ALLOW_PREEMPT") &&
++                            msm_common_has_preemption(device->local_fd, device->submitqueue_priority_count / 2);
+ 
+    device->is_perf_cntr_selectable = true;
+ 
+-- 
+2.56.0
+

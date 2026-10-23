@@ -108,8 +108,14 @@ jobs:
               || { echo "::error::packages/${p} has no upstream.env -- the poller would ignore it"; rc=1; continue; }
 
             # shellcheck disable=SC1090
-            ( TRACK=; GITHUB_REPO=; GIT_URL=; GIT_BRANCH=; OCI_IMAGE=; OCI_TAG_RE=; AUR_PKG=; ALARM_REPO=; ALARM_PKG=; CURRENT=; TRACK_PATHS=
+            ( TRACK=; GITHUB_REPO=; GIT_URL=; GIT_BRANCH=; OCI_IMAGE=; OCI_TAG_RE=; AUR_PKG=; ALARM_REPO=; ALARM_PKG=; CURRENT=; TRACK_PATHS=; POLL_DAYS=
               . "${d}upstream.env"
+              for day in ${POLL_DAYS}; do
+                case "${day}" in
+                  Mon|Tue|Wed|Thu|Fri|Sat|Sun) ;;
+                  *) echo "::error::packages/${p}: POLL_DAYS has '${day}', want UTC weekdays as date +%a spells them (Mon..Sun)"; exit 1 ;;
+                esac
+              done
               case "${TRACK}" in
                 none) ;;
                 oci)

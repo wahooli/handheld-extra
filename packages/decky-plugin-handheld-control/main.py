@@ -201,9 +201,13 @@ async def _status():
         return None, f"could not parse handheld-power output: {exc}"
 
 def _capture_cpu(status):
-    if status.get("CpuPerformanceLevel") == "manual" and status.get("ManualCpuClock"):
-        return str(status["ManualCpuClock"])
-    return "auto"
+    if status.get("CpuPerformanceLevel") != "manual":
+        return "auto"
+    pins = [f"{k.split('.', 1)[1]}={v}" for k, v in sorted(status.items())
+            if k.startswith("ManualCpuClock.") and v]
+    if pins:
+        return ",".join(pins)
+    return str(status["ManualCpuClock"]) if status.get("ManualCpuClock") else "auto"
 
 def _capture_fan(status):
     if not status.get("HasFan"):
@@ -545,6 +549,10 @@ class Plugin:
             args = ("usb", "on" if value else "off")
         elif what == "ssh":
             args = ("ssh", "on" if value else "off")
+        elif what == "stealth":
+            args = ("stealth", "on" if value else "off")
+        elif what == "stealth_boot":
+            args = ("stealth-boot", "on" if value else "off")
         elif what == "controller":
             args = ("controller", str(value))
         else:
@@ -634,6 +642,11 @@ class Plugin:
                 for c in _cpu_clusters()
             ],
         }
+
+    async def turnip_drivers(self) -> dict:
+        # turnip-perf comes with vulkan-freedreno, turnip-devel with vulkan-freedreno-devel.
+        wrappers = ("turnip-perf", "turnip-devel")
+        return {"ok": True, "installed": [w for w in wrappers if os.access(f"/usr/bin/{w}", os.X_OK)]}
 
     async def scx_set(self, name: str) -> dict:
         error = await _scx_switch(name, self._cores())

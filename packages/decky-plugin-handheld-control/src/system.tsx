@@ -23,6 +23,10 @@ export interface SettingsStatus {
   SshActive: boolean;
   SshAuthorizedKeys: number;
   SshAddresses: string[];
+  // Absent on images without the firewall profiles.
+  FirewallAvailable?: boolean;
+  FirewallStealth?: boolean;
+  FirewallStealthOnBoot?: boolean;
   ControllerAvailable: boolean;
   ControllerType: string;
   ControllerTypes: [string, string][];
@@ -304,24 +308,32 @@ export function SystemTab() {
           />
         </PanelSectionRow>
       )}
-      <PanelSectionRow>
-        <ToggleField
-          label="Stealth firewall"
-          description="Default-deny firewall, hidden hostname, random MAC. Not wired up yet."
-          checked={false}
-          disabled={true}
-          onChange={() => undefined}
-        />
-      </PanelSectionRow>
-      <PanelSectionRow>
-        <ToggleField
-          label="Stealth firewall on boot"
-          description="Come up locked down at every boot. Not wired up yet."
-          checked={false}
-          disabled={true}
-          onChange={() => undefined}
-        />
-      </PanelSectionRow>
+      {status.FirewallAvailable && (
+        <PanelSectionRow>
+          <ToggleField
+            label="Stealth firewall"
+            description={
+              status.FirewallStealth
+                ? "Nothing gets in, outgoing TCP is limited to web, DNS and SSH, the hostname is hidden and the Wi-Fi MAC is random. Remote Play and LAN transfers are blocked."
+                : "Off: incoming connections are blocked except SSH and Steam's Remote Play and LAN transfers. Turning it on reconnects Wi-Fi with a random MAC."
+            }
+            checked={!!status.FirewallStealth}
+            disabled={busy}
+            onChange={(on) => void set("stealth", on)}
+          />
+        </PanelSectionRow>
+      )}
+      {status.FirewallAvailable && (
+        <PanelSectionRow>
+          <ToggleField
+            label="Stealth firewall on boot"
+            description="Come up locked down at every boot, before the network starts, whatever it was set to before."
+            checked={!!status.FirewallStealthOnBoot}
+            disabled={busy}
+            onChange={(on) => void set("stealth_boot", on)}
+          />
+        </PanelSectionRow>
+      )}
       {status.ControllerAvailable && (
         <PanelSectionRow>
           <DropdownItem

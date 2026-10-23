@@ -1,0 +1,152 @@
+pkgname=vulkan-freedreno-devel
+pkgver=20261023.8e557130
+pkgrel=1
+_commit=8e557130bda2adcb87535aabe23bca0d68ff77b6
+pkgdesc='Open-source Vulkan driver for Adreno GPUs (turnip) from mesa main, installed beside vulkan-freedreno and selectable per game with turnip-devel'
+arch=(aarch64)
+url='https://docs.mesa3d.org/drivers/freedreno.html'
+license=('MIT AND BSD-3-Clause AND SGI-B-2.0')
+depends=(expat glibc libdisplay-info libdrm libgcc libstdc++ libx11 libxcb libxshmfence
+         spirv-tools systemd-libs vulkan-icd-loader wayland xcb-util-keysyms zlib zstd)
+makedepends=(glslang meson patchelf python-mako python-packaging python-ply python-pycparser
+             python-yaml wayland-protocols xorgproto)
+options=(!lto)
+source=("https://gitlab.freedesktop.org/mesa/mesa/-/archive/${_commit}/mesa-${_commit}.tar.gz")
+sha256sums=(SKIP)
+
+# vulkan-freedreno's own patches, rebased onto main. Its upstream/ backports
+# are not carried: main has them or has moved past them.
+_patches=(
+  0001-tu-Invalidate-CCU-color-on-UNDEFINED-transitions-of-.patch
+  0002-freedreno-Disable-early-preamble-and-scalar-predicat.patch
+  0003-tu-Add-TU_DEBUG-deck_emu-to-advertise-being-a-Steam-.patch
+  0004-tu-Don-t-request-mid-submission-preemption.patch
+  0005-tu-Add-TU_SAFE_PREEMPT-for-preemption-that-keeps-the.patch
+)
+
+_meson_options=(
+  --optimization 2
+  -D b_ndebug=true
+  -D platforms=x11,wayland
+  -D gallium-drivers=
+  -D vulkan-drivers=freedreno
+  -D freedreno-kmds=msm,virtio
+  -D vulkan-layers=
+  -D vulkan-loader-rpath=
+  -D vulkan-manifest-per-architecture=false
+  -D opengl=false
+  -D gles1=disabled
+  -D gles2=disabled
+  -D egl=disabled
+  -D glx=disabled
+  -D glvnd=disabled
+  -D gbm=disabled
+  -D shared-glapi=disabled
+  -D gallium-va=disabled
+  -D gallium-mediafoundation=disabled
+  -D gallium-d3d12-graphics=disabled
+  -D gallium-d3d12-video=disabled
+  -D video-codecs=
+  -D llvm=disabled
+  -D shared-llvm=disabled
+  -D microsoft-clc=disabled
+  -D intel-rt=disabled
+  -D power8=disabled
+  -D xlib-lease=disabled
+  -D libunwind=disabled
+  -D valgrind=disabled
+  -D lmsensors=disabled
+  -D android-libbacktrace=disabled
+  -D android-libperfetto=disabled
+  -D html-docs=disabled
+  -D tools=
+  -D build-tests=false
+  -D expat=enabled
+  -D xmlconfig=enabled
+  -D shader-cache=enabled
+  -D zstd=enabled
+  -D display-info=enabled
+  -D spirv-tools=enabled
+)
+
+_apply() {
+  local p f
+  for p in "$@"; do
+    f="${startdir}/patches/${p}"
+    [ -f "${f}" ] || { echo "::  missing patch: ${p}"; return 1; }
+
+    if ! patch -p1 --batch --forward -F0 --dry-run --quiet < "${f}"; then
+      if patch -p1 -R --batch -F0 --dry-run --quiet < "${f}" >/dev/null 2>&1; then
+        echo "::  ALREADY UPSTREAM in mesa main ${_commit:0:8}, skipped: ${p} -- drop it from the PKGBUILD"
+        continue
+      fi
+      echo "::  FAILED: ${p}"
+      echo "::  mesa main moved under the patch at ${_commit:0:8} -- rebase it and bump pkgrel."
+      echo "::  Until then devices keep the previous -devel build."
+      return 1
+    fi
+    patch -p1 --batch --forward -F0 --quiet < "${f}"
+    echo "::  applied: ${p}"
+  done
+}
+
+prepare() {
+  cd "mesa-${_commit}"
+  _apply "${_patches[@]}"
+  echo "$(cat VERSION)-handheld.${pkgver}" > VERSION
+}
+
+build() {
+  arch-meson "mesa-${_commit}" build "${_meson_options[@]}"
+  meson compile -C build
+}
+
+check() {
+  local a=build/src/freedreno/vulkan/libvulkan_freedreno.so
+  [ -f "${a}" ] || { echo "::  the driver did not build"; return 1; }
+  grep -q -a -- "-handheld.${pkgver}" "${a}" \
+    || { echo "::  the driver does not carry its version tag"; return 1; }
+  grep -q -a 'deck_emu' "${a}" \
+    || { echo "::  TU_DEBUG=deck_emu is missing from the driver"; return 1; }
+  grep -q -a 'TU_SAFE_PREEMPT' "${a}" \
+    || { echo "::  TU_SAFE_PREEMPT is missing from the driver"; return 1; }
+}
+
+_check_ldconfig() {
+  local out
+  out="$(ldconfig -n "${pkgdir}/usr/lib" 2>&1)" || true
+  [ -z "${out}" ] || { echo "::  ldconfig is unhappy with the installed libraries:"; echo "${out}"; return 1; }
+}
+
+package() {
+  # Installed under its own names only: nothing here may shadow vulkan-freedreno,
+  # and the manifest stays out of icd.d so the loader never picks it by default.
+  local staging="${srcdir}/staging"
+  rm -rf "${staging}"
+  meson install -C build --destdir "${staging}"
+  [ -f "${staging}/usr/lib/libvulkan_freedreno.so" ] \
+    && [ -f "${staging}/usr/share/vulkan/icd.d/freedreno_icd.json" ] \
+    || { echo "::  the build did not produce the driver and its ICD manifest"; return 1; }
+
+  install -Dm755 "${staging}/usr/lib/libvulkan_freedreno.so" \
+    "${pkgdir}/usr/lib/libvulkan_freedreno_devel.so"
+  patchelf --set-soname libvulkan_freedreno_devel.so "${pkgdir}/usr/lib/libvulkan_freedreno_devel.so"
+  sed 's|"libvulkan_freedreno.so"|"libvulkan_freedreno_devel.so"|' \
+    "${staging}/usr/share/vulkan/icd.d/freedreno_icd.json" > freedreno_devel_icd.json
+  grep -q 'libvulkan_freedreno_devel.so' freedreno_devel_icd.json \
+    || { echo "::  could not derive the -devel manifest from the default one"; return 1; }
+  install -Dm644 freedreno_devel_icd.json \
+    "${pkgdir}/usr/share/vulkan/handheld-extra/freedreno_devel_icd.json"
+
+  cat > turnip-devel <<'WRAP'
+#!/bin/sh
+export VK_DRIVER_FILES=/usr/share/vulkan/handheld-extra/freedreno_devel_icd.json
+export VK_ICD_FILENAMES="$VK_DRIVER_FILES"
+exec "$@"
+WRAP
+  install -Dm755 turnip-devel "${pkgdir}/usr/bin/turnip-devel"
+
+  install -Dm644 "mesa-${_commit}/docs/license.rst" -t "${pkgdir}/usr/share/licenses/${pkgname}/"
+
+  _check_ldconfig
+}

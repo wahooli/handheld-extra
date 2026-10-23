@@ -1,0 +1,111 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Waltteri Hooli <1420194+wahooli@users.noreply.github.com>
+Date: Fri, 23 Oct 2026 12:31:52 +0300
+Subject: [PATCH] framegen_probe: cap the real frame rate
+ (MANGOHUD_PROBE_FPS_LIMIT)
+
+A frame-generation base cap needs a limiter above the frame generator, on
+the game's own presents. DXVK and vkd3d-proton have one (DXVK_CONFIG,
+VKD3D_FRAME_RATE); a native Vulkan game under Proton has none, so No Man's
+Sky ran its full rate into lsfg-vk with the cap at 31 (AYN Odin 3,
+2026-10-23). The probe already sits there, between the game and lsfg-vk.
+
+MANGOHUD_PROBE_FPS_LIMIT=<fps> sleeps each present to an absolute deadline.
+A late frame re-anchors the schedule, so a stall is not followed by a burst.
+
+The probe now loads without MANGOHUD=1, like lsfg-vk's own layer, since the
+cap has to work with the HUD off; DISABLE_MANGOHUD_PROBE=1 turns it off.
+Without a limit it only counts presents.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/framegen_probe.c       | 38 ++++++++++++++++++++++++++++++++++++++
+ src/mangohud_probe.json.in |  7 ++-----
+ 2 files changed, 40 insertions(+), 5 deletions(-)
+
+diff --git a/src/framegen_probe.c b/src/framegen_probe.c
+index 2a27863..3f7258b 100644
+--- a/src/framegen_probe.c
++++ b/src/framegen_probe.c
+@@ -1,5 +1,6 @@
+ #define _POSIX_C_SOURCE 200809L
+ 
++#include <errno.h>
+ #include <pthread.h>
+ #include <stdint.h>
+ #include <stdlib.h>
+@@ -202,12 +203,49 @@ static VKAPI_ATTR void VKAPI_CALL probe_DestroyDevice(VkDevice device, const VkA
+         destroy(device, pAllocator);
+ }
+ 
++/* Real-frame cap. This layer sits above the frame generator, so sleeping here
++ * holds back the game's own frames, not the generated ones: the cap a native
++ * Vulkan game otherwise has no knob for. MANGOHUD_PROBE_FPS_LIMIT=<fps>. */
++static pthread_once_t g_limit_once = PTHREAD_ONCE_INIT;
++static pthread_mutex_t g_limit_lock = PTHREAD_MUTEX_INITIALIZER;
++static uint64_t g_limit_interval_ns;
++static uint64_t g_limit_next_ns;
++
++static void limit_init(void)
++{
++    const char *env = getenv("MANGOHUD_PROBE_FPS_LIMIT");
++    double fps = env ? strtod(env, NULL) : 0.0;
++    if (fps > 0.0 && fps <= 1000.0)
++        g_limit_interval_ns = (uint64_t)(1e9 / fps);
++}
++
++static void limit_wait(void)
++{
++    pthread_once(&g_limit_once, limit_init);
++    if (!g_limit_interval_ns)
++        return;
++
++    uint64_t now = now_ns();
++    pthread_mutex_lock(&g_limit_lock);
++    uint64_t deadline = g_limit_next_ns;
++    /* A late frame re-anchors the schedule rather than letting the next ones burst. */
++    g_limit_next_ns = (deadline > now ? deadline : now) + g_limit_interval_ns;
++    pthread_mutex_unlock(&g_limit_lock);
++
++    if (deadline <= now)
++        return;
++    struct timespec ts = { (time_t)(deadline / 1000000000ull), (long)(deadline % 1000000000ull) };
++    while (clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &ts, NULL) == EINTR)
++        ;
++}
++
+ static VKAPI_ATTR VkResult VKAPI_CALL probe_QueuePresentKHR(VkQueue queue, const VkPresentInfoKHR *pPresentInfo)
+ {
+     struct device_entry *e = find_device(DISPATCH_KEY(queue));
+     if (!e || !e->queue_present)
+         return VK_ERROR_DEVICE_LOST;
+ 
++    limit_wait();
+     __atomic_store_n(&mangohud_probe_stats.last_present_ns, now_ns(), __ATOMIC_RELAXED);
+     __atomic_fetch_add(&mangohud_probe_stats.presents, 1, __ATOMIC_RELAXED);
+     return e->queue_present(queue, pPresentInfo);
+diff --git a/src/mangohud_probe.json.in b/src/mangohud_probe.json.in
+index 14de457..3f34596 100644
+--- a/src/mangohud_probe.json.in
++++ b/src/mangohud_probe.json.in
+@@ -6,15 +6,12 @@
+       "api_version": "1.3.0",
+       "library_path": "@ld_libdir_mangohud_abs@/libMangoHud_probe.so",
+       "implementation_version": "1",
+-      "description": "MangoHud present counter for frame-generation statistics",
++      "description": "MangoHud present counter and real-frame cap (MANGOHUD_PROBE_FPS_LIMIT) for frame generation",
+       "functions": {
+          "vkNegotiateLoaderLayerInterfaceVersion": "vkNegotiateLoaderLayerInterfaceVersion"
+       },
+-      "enable_environment": {
+-        "MANGOHUD": "1"
+-      },
+       "disable_environment": {
+-        "DISABLE_MANGOHUD": "1"
++        "DISABLE_MANGOHUD_PROBE": "1"
+       }
+     }
+ }
+-- 
+2.56.0
+

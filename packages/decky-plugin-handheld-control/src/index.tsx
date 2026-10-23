@@ -39,6 +39,8 @@ interface Status {
   ManualCpuClock?: number;
   ManualCpuClockMin?: number;
   ManualCpuClockMax?: number;
+  // Per cluster: ManualCpuClock.policyN, ManualCpuClockMin/Max.policyN, CpuCores.policyN
+  [key: string]: string | number | boolean | undefined;
 }
 
 interface StatusReply { ok: boolean; error?: string; status?: Status }
@@ -89,6 +91,36 @@ const PIN_STEP_MHZ = 100;
 
 const floorStep = (mhz: number) => Math.floor(mhz / PIN_STEP_MHZ) * PIN_STEP_MHZ;
 const ceilStep = (mhz: number) => Math.ceil(mhz / PIN_STEP_MHZ) * PIN_STEP_MHZ;
+
+interface Cluster { policy: string; cores: string; low: number; high: number; pin: number; ceiling: number }
+
+// One per cpufreq policy. A daemon too old to report clusters gets one SoC-wide
+// entry (policy ""), written as a plain MHz value.
+const clustersOf = (status: Status): Cluster[] => {
+  const num = (key: string) => Number(status[key] ?? 0);
+  const policies = Object.keys(status)
+    .filter((k) => k.startsWith("ManualCpuClockMax."))
+    .map((k) => k.slice("ManualCpuClockMax.".length))
+    .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+  if (policies.length === 0) {
+    return [{
+      policy: "", cores: "", low: floorStep(num("ManualCpuClockMin")), high: ceilStep(num("ManualCpuClockMax")),
+      pin: num("ManualCpuClock"), ceiling: num("CpuMaxMhz"),
+    }];
+  }
+  return policies.map((p) => ({
+    policy: p,
+    cores: String(status[`CpuCores.${p}`] ?? ""),
+    low: floorStep(num(`ManualCpuClockMin.${p}`)),
+    high: ceilStep(num(`ManualCpuClockMax.${p}`)),
+    pin: num(`ManualCpuClock.${p}`),
+    ceiling: Math.floor(num(`CpuMaxKhz.${p}`) / 1000),
+  }));
+};
+
+// handheld-power cpu's argument: policy0=2400,policy6=4000, or a plain MHz value.
+const pinArg = (pins: Record<string, number>) =>
+  Object.entries(pins).map(([policy, mhz]) => (policy ? `${policy}=${mhz}` : String(mhz))).join(",");
 
 type Tab = "performance" | "framegen" | "system";
 
@@ -166,11 +198,12 @@ function PerformanceTab() {
   const [profiles, setProfiles] = useState<string[]>([]);
   const [fanCurves, setFanCurves] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
-  const [pinMhz, setPinMhz] = useState<number | null>(null);
+  const [pinMhz, setPinMhz] = useState<Record<string, number>>({});
   const [game, setGame] = useState<RunningGame | null>(null);
   const [scheduler, setSchedulerState] = useState<SchedulerReply | null>(null);
   const [schedulerError, setSchedulerError] = useState<string | null>(null);
   const pinTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pinPending = useRef<Record<string, number>>({});
   const schedulerWanted = useRef(true);
 
   const refreshGame = async () => {
@@ -247,13 +280,17 @@ function PerformanceTab() {
     }
   };
 
-  const queuePin = (mhz: number) => {
-    setPinMhz(mhz);
+  // Clusters moved within one debounce go out in one write.
+  const queuePin = (policy: string, mhz: number) => {
+    pinPending.current[policy] = mhz;
+    setPinMhz((prev) => ({ ...prev, [policy]: mhz }));
     if (pinTimer.current) clearTimeout(pinTimer.current);
     pinTimer.current = setTimeout(() => {
       pinTimer.current = null;
+      const pins = pinPending.current;
+      pinPending.current = {};
       void (async () => {
-        const reply = await setCpu(String(mhz));
+        const reply = await setCpu(pinArg(pins));
         if (!reply.ok) setError(reply.error || "write failed");
         await refresh();
       })();
@@ -291,10 +328,9 @@ function PerformanceTab() {
   const selectedCurve =
     status.FanCurveSource === "override" ? status.FanCurve ?? FOLLOW_PROFILE : FOLLOW_PROFILE;
 
-  const pinLow = floorStep(status.ManualCpuClockMin ?? 0);
-  const pinHigh = ceilStep(status.ManualCpuClockMax ?? 0);
+  const clusters = clustersOf(status);
   const pinned = status.CpuPerformanceLevel === "manual";
-  const pinValue = pinMhz ?? (status.ManualCpuClock || status.CpuMaxMhz || pinHigh);
+  const pinValue = (c: Cluster) => pinMhz[c.policy] ?? (c.pin || c.ceiling || c.high);
   const perGame = scheduler?.available
     ? "CPU pin, fan curve and CPU scheduler"
     : "CPU pin and fan curve";
@@ -314,7 +350,7 @@ function PerformanceTab() {
             disabled={busy}
             onChange={(on) =>
               write(() => {
-                setPinMhz(null);
+                setPinMhz({});
                 return setGameEnabled(game.appid, game.name, on);
               })
             }
@@ -338,36 +374,41 @@ function PerformanceTab() {
         </PanelSectionRow>
       )}
 
-      {status.HasCpuFreq && pinHigh > 0 && (
+      {status.HasCpuFreq && clusters.some((c) => c.high > 0) && (
         <>
           <PanelSectionRow>
             <ToggleField
               label="Pin CPU clock"
               description={
                 pinned
-                  ? `Pinned near ${status.ManualCpuClock} MHz`
+                  ? `Pinned near ${clusters.map((c) => c.pin).join(" / ")} MHz`
                   : "Following the power profile"
               }
               checked={pinned}
               disabled={busy}
-              onChange={(on) => write(() => setCpu(on ? String(pinValue) : "auto"))}
+              onChange={(on) =>
+                write(() =>
+                  setCpu(on ? pinArg(Object.fromEntries(clusters.map((c) => [c.policy, pinValue(c)]))) : "auto"),
+                )
+              }
             />
           </PanelSectionRow>
 
-          {pinned && (
-            <PanelSectionRow>
-              <SliderField
-                label="CPU clock"
-                value={pinValue}
-                min={pinLow}
-                max={pinHigh}
-                step={PIN_STEP_MHZ}
-                showValue={true}
-                valueSuffix=" MHz"
-                onChange={queuePin}
-              />
-            </PanelSectionRow>
-          )}
+          {pinned &&
+            clusters.map((c) => (
+              <PanelSectionRow key={c.policy}>
+                <SliderField
+                  label={clusters.length > 1 ? `CPU clock, cores ${c.cores}` : "CPU clock"}
+                  value={pinValue(c)}
+                  min={c.low}
+                  max={c.high}
+                  step={PIN_STEP_MHZ}
+                  showValue={true}
+                  valueSuffix=" MHz"
+                  onChange={(mhz) => queuePin(c.policy, mhz)}
+                />
+              </PanelSectionRow>
+            ))}
         </>
       )}
 

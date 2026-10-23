@@ -21,11 +21,16 @@ BEHIND=(); ERRORS=(); BUMPED=(); TRACKED=(); ABIDRIFT=(); CHECKED=0
 for conf in packages/*/upstream.env; do
     pkg="$(basename "$(dirname "${conf}")")"
     TRACK=; GITHUB_REPO=; GIT_URL=; GIT_BRANCH=; OCI_IMAGE=; OCI_TAG_RE=; AUR_PKG=; ALARM_REPO=; ALARM_PKG=; CURRENT=; INCLUDE_PRERELEASE=
-    TRACK_PATHS=
+    TRACK_PATHS=; POLL_DAYS=
     ABI_PIN_PKG=; ABI_PIN_REPO=; ABI_PIN_VAR=; ABI_PIN_AUTOBUMP=
     # shellcheck source=/dev/null
     source "${conf}"
     [ "${TRACK}" = none ] && continue
+    # A source that moves daily would otherwise publish daily.
+    if [ -n "${POLL_DAYS}" ] && [[ " ${POLL_DAYS} " != *" $(LC_ALL=C date -u +%a) "* ]]; then
+        printf '  %-32s %-14s not due (polled %s)\n' "${pkg}" "${CURRENT:0:12}" "${POLL_DAYS}"
+        continue
+    fi
     CHECKED=$((CHECKED + 1))
 
     if [ -n "${ABI_PIN_PKG}" ]; then

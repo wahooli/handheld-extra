@@ -1,0 +1,53 @@
+From: handheld-extra
+Subject: [PATCH] steamcompmgr: keep the release point of a buffer with no scan-out FB
+
+update_wayland_res() parks a commit's explicit-sync release point on the
+buffer's scan-out FB, and drops it otherwise. A release point signals when it
+is destroyed, so a buffer the display cannot scan out goes back to the client
+the moment it is imported, before its frame is shown.
+
+The Odin 3's display controller (Adreno 830 DPU) cannot scan out FP16
+("Cannot import FB to DRM: format 0x48344258 and modifier 0x500000000000001
+not supported for scan-out"), so every HDR (scRGB) frame hits this. With its
+buffers handed back early the client is never held by FIFO: No Man's Sky kept
+presenting ~60 fps under a 30 fps cap while ~750 of its frames queued in
+gamescope, growing ~40/s, and the screen fell ever further behind
+(AYN Odin 3, 2026-10-23). SDR, which gets an FB, was unaffected.
+
+Keep the point with the commit when there is no FB, so it signals when the
+commit is destroyed: the same lifetime as the commit's wlr_buffer lock.
+
+Present in ValveSoftware and OpenGamingCollective gamescope as of 2026-10-23.
+
+---
+diff --git a/src/commit.h b/src/commit.h
+--- a/src/commit.h
++++ b/src/commit.h
+@@ -39,6 +39,8 @@
+ 	bool ShouldPreemptivelyUpscale( GamescopeUpscaleFilter eFilter, GamescopeUpscaleScaler eScaler );
+ 
+ 	struct wlr_buffer *buf = nullptr;
++	// Explicit-sync release point for buffers without a scan-out FB to hold it.
++	std::shared_ptr<gamescope::CReleaseTimelinePoint> pReleasePoint;
+ 	gamescope::Rc<CVulkanTexture> vulkanTex;
+ 	std::optional<UpscaledTexture_t> upscaledTexture;
+ 
+diff --git a/src/steamcompmgr.cpp b/src/steamcompmgr.cpp
+--- a/src/steamcompmgr.cpp
++++ b/src/steamcompmgr.cpp
+@@ -8647,6 +8647,13 @@
+ 		else
+ 			pBackendFb->SetBuffer( buf );
+ 	}
++	else
++	{
++		// No scan-out FB (e.g. an FP16 HDR buffer the display cannot scan out):
++		// a dropped release point signals at once, handing the client its buffer
++		// back before this frame is shown, and FIFO loses its back-pressure.
++		newCommit->pReleasePoint = std::move( reslistentry.pReleasePoint );
++	}
+ 
+ 	if ( eventFd != gamescope::CAcquireTimelinePoint::k_InvalidEvent )
+ 	{
+-- 
+2.55.0
