@@ -1,5 +1,5 @@
 pkgname=decky-plugin-handheld-control
-pkgver=1.11.8
+pkgver=1.11.9
 pkgrel=1
 pkgdesc='Decky plugin: fan curve, CPU clock pin, power profile and live thermals via org.handheld.Power1'
 arch=('aarch64')

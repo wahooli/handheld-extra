@@ -55,6 +55,9 @@ export const setPowerConfig = callable<[section: string, values: Record<string, 
 export const resetPowerConfig = callable<[section: string], WriteReply>("reset_power_config");
 export const getGameTuning = callable<[appid: string], GameTuningReply>("get_game_tuning");
 export const setGameTuning = callable<[appid: string, nice: number, irq: boolean], WriteReply>("set_game_tuning");
+export interface GameShaderReply { ok: boolean; error?: string; available: boolean; shaders?: string[]; shader?: string }
+export const getGameShader = callable<[appid: string], GameShaderReply>("get_game_shader");
+export const setGameShader = callable<[appid: string, name: string], WriteReply>("set_game_shader");
 
 export const pwmToPercent = (pwm: number) => Math.round((pwm / 255) * 100);
 export const percentToPwm = (percent: number) => Math.round((percent / 100) * 255);

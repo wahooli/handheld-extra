@@ -1,0 +1,32 @@
+From: handheld-extra
+Subject: [PATCH] reshade: give an effect without uniforms a uniform buffer
+
+ReshadeEffectPipeline::init() sizes the uniform buffer by the effect's
+uniforms. An effect that declares none (every value a #define) asks for a
+zero-size VkBuffer, which is invalid, and Turnip then segfaults in
+vkBindBufferMemory, taking the whole session down. Selecting such an effect
+through GAMESCOPE_RESHADE_EFFECT restarted Game Mode on the AYN Odin 3
+(Adreno 830, Mesa 26.2.5) every time, 2026-10-24; effects with uniforms
+were unaffected.
+
+Give the buffer a 16-byte floor. Nothing reads past total_uniform_size, so
+the extra bytes go unused.
+
+Present in ValveSoftware and OpenGamingCollective gamescope as of 2026-10-24.
+
+---
+--- a/src/reshade_effect_manager.cpp
++++ b/src/reshade_effect_manager.cpp
+@@ -1020,7 +1020,9 @@
+         VkBufferCreateInfo bufferCreateInfo =
+         {
+             .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+-            .size  = m_module->total_uniform_size,
++            // An effect without uniforms has none to size it by, and a zero-size
++            // buffer is invalid: Turnip segfaults binding its memory.
++            .size  = std::max<VkDeviceSize>(m_module->total_uniform_size, 16),
+             .usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+         };
+ 
+-- 
+2.55.0

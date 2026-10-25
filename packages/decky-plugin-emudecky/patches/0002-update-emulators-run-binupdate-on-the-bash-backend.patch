@@ -1,0 +1,55 @@
+From: Waltteri Hooli <1420194+wahooli@users.noreply.github.com>
+Subject: [PATCH] Update Emulators: run binupdate on the bash backend
+
+The button launches tools/wrappers/update-emulators.sh, which only the Python
+backend (api.py) ships. EmuDeck's bash backend, which the arm64 EmuDeck 2.6.1
+app installs, has no tools/wrappers/: Steam started the shortcut and it ended at
+once. Its emulator updater is tools/binupdate/binupdate.sh, so getSettings
+hands that path to the frontend on the bash backend, and the button falls back
+to the wrapper when it is absent.
+
+---
+diff --git a/main.py b/main.py
+index aa99af2..e3dab10 100644
+--- a/main.py
++++ b/main.py
+@@ -202,6 +202,8 @@ class Plugin:
+             configuration["branch"] = branch
+             configuration["systemOS"] = os.name
+             configuration["toolsPath"] = str(configuration.get("toolsPath", ""))
++            # The bash backend has no tools/wrappers/; its emulator updater is binupdate.
++            configuration["updateEmulators"] = configuration["toolsPath"] + "/binupdate/binupdate.sh"
+             return json.dumps(configuration, indent=4)
+ 
+         json_settings_path = Path(emudeck_folder) / "settings.json"
+diff --git a/src/components/Content.tsx b/src/components/Content.tsx
+index 2778bbf..c8552a6 100644
+--- a/src/components/Content.tsx
++++ b/src/components/Content.tsx
+@@ -53,6 +53,7 @@ const Content: VFC<{ serverAPI: ServerAPI }> = () => {
+       branch: null,
+       systemOS: "",
+       toolsPath: undefined,
++      updateEmulators: undefined,
+     },
+     updating: false,
+     msg: "",
+@@ -123,6 +124,7 @@ const Content: VFC<{ serverAPI: ServerAPI }> = () => {
+     branch,
+     systemOS,
+     toolsPath,
++    updateEmulators,
+   } = emuDeckConfig;
+ 
+   const listsega = [
+@@ -457,7 +459,7 @@ const Content: VFC<{ serverAPI: ServerAPI }> = () => {
+               onClick={() =>
+                 launchApp(serverAPI, {
+                   name: t("UpdateEmusTitle"),
+-                  exec: `${toolsPath}/wrappers/update-emulators.sh`,
++                  exec: updateEmulators || `${toolsPath}/wrappers/update-emulators.sh`,
+                 })
+               }>
+               {t("UpdateEmusTitle")}
+-- 
+2.55.0

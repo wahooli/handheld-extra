@@ -14,6 +14,8 @@ TIMEOUT = 10
 GAMES_FILE = os.path.join(decky.DECKY_PLUGIN_SETTINGS_DIR, "per-game.json")
 FRAME_CAPS_FILE = os.path.join(decky.DECKY_PLUGIN_SETTINGS_DIR, "frame-caps.json")
 TUNING_FILE = os.path.join(decky.DECKY_PLUGIN_SETTINGS_DIR, "game-tuning.json")
+SHADERS_FILE = os.path.join(decky.DECKY_PLUGIN_SETTINGS_DIR, "game-shaders.json")
+SHADER_CLI = "/usr/bin/handheld-shader"
 GAME_NICE_RANGE = (-20, 0)
 MAX_FRAME_CAP = 240
 REFRESH_ENV = "HANDHELD_REFRESH_RATE"
@@ -303,21 +305,26 @@ async def _power_config():
     except json.JSONDecodeError as exc:
         return None, f"could not parse handheld-power config: {exc}"
 
-def _load_tuning():
+def _load_dict(path):
     try:
-        with open(TUNING_FILE) as f:
+        with open(path) as f:
             data = json.load(f)
     except (OSError, ValueError):
         data = {}
     return data if isinstance(data, dict) else {}
 
+def _load_tuning():
+    return _load_dict(TUNING_FILE)
+
 def _load_caps():
-    try:
-        with open(FRAME_CAPS_FILE) as f:
-            data = json.load(f)
-    except (OSError, ValueError):
-        data = {}
-    return data if isinstance(data, dict) else {}
+    return _load_dict(FRAME_CAPS_FILE)
+
+async def _shader(*args):
+    # The user's own effects are under their home, which the CLI finds through HOME.
+    rc, out, err = await _exec(SHADER_CLI, *args, env={**os.environ, "HOME": decky.DECKY_USER_HOME})
+    if rc != 0:
+        return None, err.strip().removeprefix("handheld-shader: ") or f"handheld-shader {args[0]} exited {rc}"
+    return out, ""
 
 def _steam_libraries():
     found = []
@@ -414,6 +421,8 @@ class Plugin:
         self._game = None
         self._tuned = False
         self._tuning_lock = asyncio.Lock()
+        self._shaded = False
+        self._shader_lock = asyncio.Lock()
 
     async def _apply_tuning(self):
         async with self._tuning_lock:
@@ -438,6 +447,19 @@ class Plugin:
                 decky.logger.warning("handheld-control: game tuning: %s", error)
                 return error
             self._tuned = True
+            return ""
+
+    # Takes off only an effect this put on, so one set some other way stays.
+    async def _apply_shader(self):
+        async with self._shader_lock:
+            shader = _load_dict(SHADERS_FILE).get(self._game[0], "") if self._game else ""
+            if not shader and not self._shaded:
+                return ""
+            _, error = await _shader(*(("set", shader) if shader else ("clear",)))
+            if error:
+                decky.logger.warning("handheld-control: shader: %s", error)
+                return error
+            self._shaded = bool(shader)
             return ""
 
     def _cores(self):
@@ -633,6 +655,37 @@ class Plugin:
         error = await self._apply_tuning() if self._game and self._game[0] == key else ""
         return {"ok": not error, "error": error}
 
+    async def get_game_shader(self, appid: str) -> dict:
+        out, error = await _shader("list")
+        if out is None:
+            return {"ok": False, "available": os.access(SHADER_CLI, os.X_OK), "error": error}
+        return {
+            "ok": True,
+            "available": True,
+            "shaders": out.split(),
+            "shader": _load_dict(SHADERS_FILE).get(str(appid), ""),
+        }
+
+    async def set_game_shader(self, appid: str, name: str) -> dict:
+        key = str(appid)
+        if not key.isdigit():
+            return {"ok": False, "error": f"{appid!r} is not a Steam app id"}
+        if name:
+            out, error = await _shader("list")
+            if out is None:
+                return {"ok": False, "error": error}
+            if name not in out.split():
+                return {"ok": False, "error": f"{name!r} is not an installed effect"}
+        async with self._games_lock:
+            data = _load_dict(SHADERS_FILE)
+            if name:
+                data[key] = name
+            else:
+                data.pop(key, None)
+            _save_json(SHADERS_FILE, data)
+        error = await self._apply_shader() if self._game and self._game[0] == key else ""
+        return {"ok": not error, "error": error}
+
     async def cpu_clusters(self) -> dict:
         return {
             "ok": True,
@@ -728,6 +781,7 @@ class Plugin:
         result = await self._start_game(str(appid))
         await self._scx_follow_game()
         await self._apply_tuning()
+        await self._apply_shader()
         return result
 
     async def game_stopped(self, appid: str) -> dict:
@@ -736,6 +790,7 @@ class Plugin:
         result = await self._stop_game(str(appid))
         await self._scx_follow_game()
         await self._apply_tuning()
+        await self._apply_shader()
         return result
 
     async def sync_running(self, appid: str, cores: str = "") -> dict:
@@ -753,6 +808,7 @@ class Plugin:
         if not self._game:
             self._tuned = True
         await self._apply_tuning()
+        await self._apply_shader()
         return result
 
     async def _start_game(self, appid: str) -> dict:

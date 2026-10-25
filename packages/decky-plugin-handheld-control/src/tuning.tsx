@@ -20,11 +20,13 @@ import {
   PowerConfig,
   PowerProfile,
   WriteReply,
+  getGameShader,
   getGameTuning,
   getPowerConfig,
   percentToPwm,
   pwmToPercent,
   resetPowerConfig,
+  setGameShader,
   setGameTuning,
   setPowerConfig,
 } from "./power";
@@ -138,6 +140,58 @@ export function GameTuning({ game }: { game: Game }) {
             description={`Hardware interrupts go to the cores outside ${cores} while it runs`}
             checked={irq}
             onChange={(on) => void save(nice, on)}
+          />
+        </PanelSectionRow>
+      )}
+      {error && (
+        <PanelSectionRow>
+          <Note error>{error}</Note>
+        </PanelSectionRow>
+      )}
+    </>
+  );
+}
+
+const NO_SHADER = "";
+
+export function GameShader({ game }: { game: Game }) {
+  const [shaders, setShaders] = useState<string[]>([]);
+  const [shader, setShader] = useState(NO_SHADER);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let live = true;
+    void getGameShader(game.appid).then((reply) => {
+      if (!live) return;
+      setShaders(reply.shaders ?? []);
+      setShader(reply.shader ?? NO_SHADER);
+      // An image without handheld-shader just has no dropdown.
+      setError(reply.ok || !reply.available ? null : reply.error || "could not list the shaders");
+    });
+    return () => {
+      live = false;
+    };
+  }, [game.appid]);
+
+  const choose = async (name: string) => {
+    setShader(name);
+    const reply = await setGameShader(game.appid, name);
+    setError(reply.ok ? null : reply.error || "could not apply the shader");
+  };
+
+  return (
+    <>
+      {shaders.length > 0 && (
+        <PanelSectionRow>
+          <DropdownItem
+            label="Shader"
+            description="Drawn over this game by gamescope, applied now"
+            rgOptions={[
+              { data: NO_SHADER, label: "None" },
+              ...shaders.map((s) => ({ data: s, label: s.replace(/\.fx$/, "") })),
+            ]}
+            selectedOption={shader}
+            onChange={(opt) => void choose(opt.data as string)}
           />
         </PanelSectionRow>
       )}

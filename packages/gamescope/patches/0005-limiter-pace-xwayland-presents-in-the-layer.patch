@@ -1,0 +1,229 @@
+From: handheld-extra
+Subject: [PATCH] limiter: pace Xwayland presents in the layer
+
+The frame limiter holds an app back through the Gamescope swapchain protocol:
+it is presented in FIFO, and gamescope withholds frames. A swapchain that
+cannot bypass Xwayland is created on the XCB fallback surface and presents
+through Xwayland's Present instead, which gamescope cannot pace, so nothing
+held it back at all: the app rendered as fast as it could, and gamescope only
+showed some of its frames.
+
+Since 23a53b9 ("layer: don't bypass Xwayland for offscreen client windows in
+Wine") that is every windowed Wine game, which Wine presents offscreen
+(_WINE_ALLOW_FLIP=0). Fallout: New Vegas, windowed under a 30 fps Steam limit,
+kept the GPU 88-95% busy, against 42% with DXVK's own cap at 40 (AYN Odin 3,
+2026-10-25). FIFO on the fallback does not help either: Xwayland then paces
+the window by its own ~60 Hz timer, whatever the limit.
+
+gamescope_limiter version 2 adds a target_fps event: the limit, sent on bind
+and on every change (update_app_target_refresh_cycle() now updates the runtime
+info on any change of the target, not only on/off). For a swapchain that is not
+bypassing, the layer sleeps in QueuePresentKHR until the next present is due at
+that rate, after its lookups so no map lock is held. Bypassing swapchains, and
+apps without a limit, are unchanged; so is the legacy GAMESCOPE_LIMITER_FILE.
+
+---
+--- a/layer/VkLayer_FROG_gamescope_wsi.cpp
++++ b/layer/VkLayer_FROG_gamescope_wsi.cpp
+@@ -361,12 +361,18 @@ namespace GamescopeWSILayer {
+ 
+     gamescope_limiter *proxy = nullptr;
+     std::atomic<uint32_t> state = { 0 };
++    std::atomic<uint32_t> targetFps = { 0 }; // 0 from a version 1 compositor.
+   };
+ 
+   static constexpr gamescope_limiter_listener s_limiterListener = {
+     .state = [](void *data, gamescope_limiter *limiter, uint32_t frameLimitState) {
+       reinterpret_cast<GamescopeLimiterState *>(data)->state = frameLimitState;
+     },
++    .target_fps = [](void *data, gamescope_limiter *limiter, uint32_t fps) {
++      auto *state = reinterpret_cast<GamescopeLimiterState *>(data);
++      if (state->targetFps.exchange(fps) != fps)
++        fprintf(stderr, "[Gamescope WSI] Frame limiter target: %u fps\n", fps);
++    },
+   };
+ 
+   // Legacy fallback for compositors without gamescope_limiter. The Mesa DRI3
+@@ -631,6 +637,7 @@ namespace GamescopeWSILayer {
+     bool forceFifo;
+     VkPresentModeKHR presentMode;
+     VkExtent2D extent;
++    uint64_t limiterDeadline = 0; // Next present time, when we pace an Xwayland present ourselves.
+     uint32_t serverId = 0;
+     bool isHdrColorspace = false;
+     bool retired = false;
+@@ -1690,6 +1697,37 @@ namespace GamescopeWSILayer {
+         }
+       }
+ 
++      // A swapchain that cannot bypass Xwayland presents through Xwayland's Present,
++      // which gamescope cannot pace, so the frame limiter would never hold the app
++      // back: Wine's offscreen windows (every windowed Wine game) rendered as fast as
++      // they could while gamescope showed some of their frames. Pace those presents
++      // to the limiter's target here instead.
++      uint64_t limitUntil = 0;
++      for (uint32_t i = 0; i < presentInfo.swapchainCount; i++) {
++        auto gamescopeSwapchain = GamescopeSwapchain::get(presentInfo.pSwapchains[i]);
++        if (!gamescopeSwapchain || gamescopeSwapchain->isWayland || gamescopeSwapchain->isBypassingXWayland)
++          continue;
++        auto gamescopeSurface = GamescopeSurface::get(gamescopeSwapchain->surface);
++        const auto& limiterState = gamescopeSurface ? gamescopeSurface->waylandObjects.limiterState : nullptr;
++        const uint32_t targetFps = forceFifo && limiterState ? limiterState->targetFps.load() : 0;
++        if (!targetFps) {
++          gamescopeSwapchain->limiterDeadline = 0;
++          continue;
++        }
++        const uint64_t interval = 1'000'000'000ull / targetFps;
++        const uint64_t deadline = gamescopeSwapchain->limiterDeadline;
++        const uint64_t presentAt = std::max(getTimeMonotonic(), deadline);
++        // The next deadline follows this one, so the rate holds on average; one
++        // late by a whole interval or more restarts it instead of a burst.
++        gamescopeSwapchain->limiterDeadline = presentAt - deadline < interval ? deadline + interval : presentAt + interval;
++        limitUntil = std::max(limitUntil, presentAt);
++      }
++      // Sleep after the lookups above, which hold the maps' locks.
++      if (limitUntil) {
++        const timespec until = { time_t(limitUntil / 1'000'000'000ull), long(limitUntil % 1'000'000'000ull) };
++        while (clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &until, nullptr) == EINTR) {}
++      }
++
+       VkResult result = pDispatch->QueuePresentKHR(queue, &presentInfo);
+ 
+       for (uint32_t i = 0; i < presentInfo.swapchainCount; i++) {
+--- a/protocol/gamescope-limiter.xml
++++ b/protocol/gamescope-limiter.xml
+@@ -29,7 +29,7 @@
+     client may bind this interface, it carries no privileged requests.
+   </description>
+ 
+-  <interface name="gamescope_limiter" version="1">
++  <interface name="gamescope_limiter" version="2">
+     <description summary="frame limiter state">
+       Broadcasts the compositor's frame limiter state to presentation
+       layers. This supersedes the GAMESCOPE_LIMITER_FILE mechanism, which
+@@ -48,5 +48,16 @@
+       </description>
+       <arg name="frame_limit_state" type="uint" summary="1 = present in FIFO, 0 = no override"/>
+     </event>
++
++    <event name="target_fps" since="2">
++      <description summary="current frame limit">
++        Sent once when the client binds and again whenever it changes. The
++        rate the frame limiter holds the focused app to, in frames per
++        second, or 0 when there is none. A presentation layer that cannot
++        leave the pacing to the compositor, such as one presenting through
++        Xwayland, can pace to it itself.
++      </description>
++      <arg name="fps" type="uint" summary="frame limit, 0 for none"/>
++    </event>
+   </interface>
+ </protocol>
+--- a/src/WaylandServer/GamescopeLimiter.h
++++ b/src/WaylandServer/GamescopeLimiter.h
+@@ -8,6 +8,7 @@
+ #include <vector>
+ 
+ uint32_t wlserver_get_frame_limiter_state( void );
++uint32_t wlserver_get_frame_limiter_target( void );
+ 
+ namespace gamescope::WaylandServer
+ {
+@@ -15,13 +16,13 @@ namespace gamescope::WaylandServer
+ 	class CGamescopeLimiter : public CWaylandResource
+ 	{
+ 	public:
+-		WL_PROTO_DEFINE( gamescope_limiter, 1 );
++		WL_PROTO_DEFINE( gamescope_limiter, 2 );
+ 
+ 		CGamescopeLimiter( WaylandResourceDesc_t desc )
+ 			: CWaylandResource( desc )
+ 		{
+ 			s_Limiters.push_back( this );
+-			SendState( wlserver_get_frame_limiter_state() );
++			SendState( wlserver_get_frame_limiter_state(), wlserver_get_frame_limiter_target() );
+ 		}
+ 
+ 		~CGamescopeLimiter()
+@@ -29,9 +30,11 @@ namespace gamescope::WaylandServer
+ 			std::erase_if( s_Limiters, [this]( CGamescopeLimiter *pLimiter ){ return pLimiter == this; } );
+ 		}
+ 
+-		void SendState( uint32_t uState )
++		void SendState( uint32_t uState, uint32_t uTargetFPS )
+ 		{
+ 			gamescope_limiter_send_state( GetResource(), uState );
++			if ( GetVersion() >= GAMESCOPE_LIMITER_TARGET_FPS_SINCE_VERSION )
++				gamescope_limiter_send_target_fps( GetResource(), uTargetFPS );
+ 		}
+ 
+ 		static std::span<CGamescopeLimiter *> GetLimiters()
+--- a/src/steamcompmgr.cpp
++++ b/src/steamcompmgr.cpp
+@@ -1320,7 +1320,8 @@ static void update_app_target_refresh_cycle()
+ {
+ 	int nPrevFPSLimit = g_nSteamCompMgrTargetFPS;
+ 	_update_app_target_refresh_cycle();
+-	if ( !!g_nSteamCompMgrTargetFPS != !!nPrevFPSLimit )
++	// On any change, not just on/off: gamescope_limiter clients get the target.
++	if ( g_nSteamCompMgrTargetFPS != nPrevFPSLimit )
+ 		update_runtime_info();
+ }
+ 
+@@ -6861,7 +6862,7 @@ update_runtime_info()
+ 	uint32_t limiter_enabled = g_nSteamCompMgrTargetFPS != 0 ? 1 : 0;
+ 
+ 	// The file is a legacy fallback for clients without gamescope_limiter.
+-	wlserver_set_frame_limiter_state( limiter_enabled );
++	wlserver_set_frame_limiter_state( limiter_enabled, uint32_t( std::max( g_nSteamCompMgrTargetFPS, 0 ) ) );
+ 
+ 	if ( g_nRuntimeInfoFd < 0 )
+ 		return;
+--- a/src/wlserver.cpp
++++ b/src/wlserver.cpp
+@@ -1222,12 +1222,20 @@ static void create_gamescope_swapchain_factory_v2( void )
+ 
+ // Written from the steamcompmgr thread, sent from under the wlserver lock.
+ static std::atomic<uint32_t> s_uFrameLimiterState = { 0 };
++static std::atomic<uint32_t> s_uFrameLimiterTarget = { 0 };
+ static std::atomic<bool> s_bFrameLimiterStateDirty = { false };
+ 
+-void wlserver_set_frame_limiter_state( uint32_t uState )
++void wlserver_set_frame_limiter_state( uint32_t uState, uint32_t uTargetFPS )
+ {
+ 	if ( s_uFrameLimiterState.exchange( uState ) != uState )
+ 		s_bFrameLimiterStateDirty = true;
++	if ( s_uFrameLimiterTarget.exchange( uTargetFPS ) != uTargetFPS )
++		s_bFrameLimiterStateDirty = true;
++}
++
++uint32_t wlserver_get_frame_limiter_target( void )
++{
++	return s_uFrameLimiterTarget;
+ }
+ 
+ uint32_t wlserver_get_frame_limiter_state( void )
+@@ -1244,9 +1252,10 @@ void wlserver_flush_frame_limiter_state( void )
+ 
+ 	wlserver_lock();
+ 	uint32_t uState = s_uFrameLimiterState;
++	uint32_t uTargetFPS = s_uFrameLimiterTarget;
+ 	for ( CGamescopeLimiter *pLimiter : CGamescopeLimiter::GetLimiters() )
+ 	{
+-		pLimiter->SendState( uState );
++		pLimiter->SendState( uState, uTargetFPS );
+ 	}
+ 	wlserver_unlock();
+ }
+--- a/src/wlserver.hpp
++++ b/src/wlserver.hpp
+@@ -333,7 +333,7 @@ void wlserver_shutdown();
+ 
+ void wlserver_send_gamescope_control( wl_resource *control );
+ 
+-void wlserver_set_frame_limiter_state( uint32_t uState );
++void wlserver_set_frame_limiter_state( uint32_t uState, uint32_t uTargetFPS );
+ uint32_t wlserver_get_frame_limiter_state( void );
+ void wlserver_flush_frame_limiter_state( void );
+ 
+-- 
+2.55.0

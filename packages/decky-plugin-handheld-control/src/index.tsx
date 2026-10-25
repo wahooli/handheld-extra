@@ -15,7 +15,7 @@ import { useEffect, useRef, useState } from "react";
 import { FaFan } from "react-icons/fa";
 import { FrameGenTab, lsfgStatus, syncFrameCap } from "./lsfg";
 import { GameLaunchSettings } from "./compat";
-import { GameTuning, PowerTuning } from "./tuning";
+import { GameShader, GameTuning, PowerTuning } from "./tuning";
 import { SystemTab, settingsStatus } from "./system";
 import { launchOptionsOf, readTweaks } from "./launchOptions";
 
@@ -444,6 +444,7 @@ function PerformanceTab() {
 
       {game && <GameLaunchSettings game={game} />}
       {game && <GameTuning game={game} />}
+      {game && <GameShader game={game} />}
 
       {status.HasFan && fanCurves.length > 0 && (
         <PanelSectionRow>

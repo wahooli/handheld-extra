@@ -1,0 +1,54 @@
+From: Waltteri Hooli <1420194+wahooli@users.noreply.github.com>
+Subject: [PATCH] main: skip the 2-second cloud status poll when there is nothing to ask
+
+The frontend calls emudeck("cloud_decky_check_status") every 2 s for as long
+as Decky runs. Each call logged the full command line at INFO (into the
+journal through the plugin loader) and rewrote ~/.config/EmuDeck/logs/decky.log
+— about 43,000 of each a day, on flash.
+
+On dev the bash ("LEGACY") backend is supported too, and there every poll would
+source all of functions/all.sh. So: with no backend at all, every command
+returns "" at once, as before; on the bash backend the poll returns "" while
+cloud sync is off. A poll that does run no longer logs or rewrites decky.log;
+every other command logs as before.
+
+---
+diff --git a/main.py b/main.py
+index 1ed117e..aa99af2 100644
+--- a/main.py
++++ b/main.py
+@@ -125,14 +125,31 @@ class Plugin:
+ 
+     async def emudeck(self, command):
+ 
++        # The UI polls cloud_decky_check_status every 2 s for as long as Decky
++        # runs. Without a backend there is nothing to run, and on the bash one
++        # each poll would source all of functions/all.sh: return before a
++        # subprocess, a log line and a decky.log rewrite when there is nothing
++        # to ask.
++        poll = command == "cloud_decky_check_status"
++        if get_mode() == "LEGACY":
++            if not (emudeck_backend / "functions" / "all.sh").exists():
++                return ""
++            if poll and read_legacy_settings().get("cloud_sync_status") is not True:
++                return ""
++
+         bash_command = build_shell_command(command)
+ 
+-        log(bash_command)
++        if not poll:
++            log(bash_command)
+ 
+         result = subprocess.run(bash_command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+ 
+         cleaned_stdout = result.stdout.strip()
+ 
++        # The status poll keeps decky.log as the last real command left it.
++        if poll:
++            return cleaned_stdout
++
+         os.makedirs(emudeck_logs, exist_ok=True)
+ 
+         # Escribir el resultado en un archivo de log
+-- 
+2.55.0

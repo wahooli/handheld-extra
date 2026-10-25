@@ -1,7 +1,7 @@
 pkgname=decky-plugin-emudecky
-pkgver=1.0.10
-pkgrel=3
-_commit=84af595
+pkgver=20260920.8d6b98b1
+pkgrel=1
+_commit=8d6b98b1ad05c9473ad1a1a7bf99f7b7503d18ae
 pkgdesc="EmuDeck's official Decky plugin (EmuDecky), built for aarch64"
 arch=('aarch64')
 url='https://github.com/EmuDeck/EmuDecky'
@@ -14,7 +14,8 @@ sha256sums=('SKIP')
 _srcdir="EmuDecky"
 
 _patches=(
-  0001-main-stop-the-cloud-status-poll-writing-logs.patch
+  0001-main-skip-the-cloud-status-poll-when-there-is-nothing-to-ask.patch
+  0002-update-emulators-run-binupdate-on-the-bash-backend.patch
 )
 
 prepare() {
@@ -26,16 +27,16 @@ prepare() {
         [ -f "${f}" ] || { echo "::  missing patch: ${p}"; return 1; }
         if ! patch -p1 --batch --forward -F0 --dry-run --quiet < "${f}"; then
             echo "::  FAILED: ${p}"
-            echo "::  EmuDecky moved under the patch — rebase it against ${pkgver}."
+            echo "::  EmuDecky moved under the patch — rebase it against ${_commit:0:8}."
             return 1
         fi
         patch -p1 --batch --forward -F0 --quiet < "${f}"
         echo "::  applied: ${p}"
     done
 
-    # upstream's package.json still says 1.0.8 at the 1.0.10 tag, and decky-sync
-    # reseeds ~/homebrew/plugins only when this version is newer: without our
-    # own, a rebuilt package never reaches a device that already has the plugin.
+    # upstream's package.json lags (1.0.8 at the 1.0.10 tag, 1.0.11 on dev), and
+    # decky-sync reseeds ~/homebrew/plugins only when this version is newer:
+    # without our own, a rebuilt package never reaches a device that has the plugin.
     sed -i -E "s/(\"version\": *\")[^\"]*\"/\1${pkgver}-${pkgrel}\"/" package.json
     grep -q "\"version\": *\"${pkgver}-${pkgrel}\"" package.json \
         || { echo "::  package.json version was not set"; return 1; }
