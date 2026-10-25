@@ -67,6 +67,14 @@ expect "$(run)" 0 "another SoC is a quiet no-op"
 expect "$(holds a 1.0)" 1.0 "and writes nothing"
 printf 'qcom,sm8750\0' > "${t}/compatible"
 
+if [ "$(id -u)" -ne 0 ]; then  # root reads it regardless
+    slots 1.0 1.0
+    chmod 000 "${t}/abl_a"
+    expect "$(run --check)" 1 "an unreadable slot is an error"
+    grep -q "run as root" "${t}/out" && ok "that says to run as root" || bad "that says to run as root"
+    chmod 644 "${t}/abl_a"
+fi
+
 cp "${t}/stock" "${t}/lib/abl_signed-SM8750.elf"
 expect "$(run)" 1 "a payload missing from the catalog is refused"
 expect "$(holds a 1.0)" 1.0 "and writes nothing"

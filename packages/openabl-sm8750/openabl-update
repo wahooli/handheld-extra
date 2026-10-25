@@ -64,6 +64,8 @@ for slot in a b; do
     p=${part[${slot}]}
     [ -e "${p}" ] || die "no abl_${slot} partition"
     [ -b "${p}" ] || [ "${OPENABL_ALLOW_FILES:-0}" = 1 ] || die "abl_${slot} (${p}) is not a block device"
+    # Before the size check: unreadable, part_size prints nothing and that test dies misleadingly.
+    [ -r "${p}" ] || die "cannot read abl_${slot} (${p}): run as root"
     [ "$(part_size "${p}")" -ge "${payload_size}" ] || die "abl_${slot} is smaller than OpenABL ${target}"
 done
 

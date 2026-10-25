@@ -1,6 +1,6 @@
 pkgname=openabl-sm8750
 pkgver=1.2
-pkgrel=1
+pkgrel=2
 pkgdesc='OpenABL bootloader for SM8750 (AYN Odin 3), kept current on abl_a/abl_b'
 arch=(aarch64)
 url='https://github.com/OpenHandheldCollective/OpenABL'
