@@ -1,0 +1,49 @@
+pkgname=xenia-canary-git
+pkgver=20261025.291f0c9b
+pkgrel=1
+_commit=291f0c9be398a3e0a0e29f378cbd564fa28c55a9
+pkgdesc='Xbox 360 emulator, native aarch64 build of the canary_experimental branch (A64 CPU backend, Vulkan)'
+arch=(aarch64)
+url='https://github.com/xenia-canary/xenia-canary'
+license=(BSD-3-Clause)
+depends=(alsa-lib fontconfig glib2 gtk3 libx11 libxcb sdl2 vulkan-icd-loader)
+makedepends=(clang lld llvm cmake ninja git python)
+provides=(xenia-canary)
+conflicts=(xenia-canary)
+# Upstream's Release config does its own ThinLTO with lld; makepkg's -flto=auto would fight it.
+options=(!lto)
+source=("git+https://github.com/xenia-canary/xenia-canary.git#commit=${_commit}")
+sha256sums=(SKIP)
+
+prepare() {
+  cd xenia-canary
+  # What `xenia-build.py setup` fetches on Linux: every submodule but the DirectX ones.
+  git submodule update --init --depth=1 \
+    $(git config -f .gitmodules --get-regexp '^submodule\..*\.path$' | awk '$2 !~ /DirectX/ { print $2 }')
+  # Upstream's -Werror is for its own CI flags; makepkg's (e.g. _FORTIFY_SOURCE=3
+  # marking fread warn_unused_result) turn harmless warnings into a failed build.
+  sed -i '/PRIVATE -Werror)/d' cmake/XeniaHelpers.cmake
+}
+
+build() {
+  # Upstream's own configure (xenia-build.py), so the output lands where it does there.
+  cmake -S xenia-canary -B build -G 'Ninja Multi-Config' \
+    -DCMAKE_C_COMPILER=clang \
+    -DCMAKE_CXX_COMPILER=clang++
+  # xenia-build.py writes this after configuring; makepkg's checkout is on branch "makepkg", so name the real one.
+  cat > build/version.h <<EOF
+#ifndef GENERATED_VERSION_H_
+#define GENERATED_VERSION_H_
+#define XE_BUILD_BRANCH "canary_experimental"
+#define XE_BUILD_COMMIT "${_commit}"
+#define XE_BUILD_COMMIT_SHORT "${_commit:0:7}"
+#define XE_BUILD_DATE __DATE__
+#endif  // GENERATED_VERSION_H_
+EOF
+  cmake --build build --config Release
+}
+
+package() {
+  install -Dm755 build/bin/Linux/Release/xenia_canary -t "${pkgdir}/usr/bin/"
+  install -Dm644 xenia-canary/LICENSE -t "${pkgdir}/usr/share/licenses/${pkgname}/"
+}
