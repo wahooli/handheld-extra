@@ -93,7 +93,9 @@ jobs:
           echo "::warning::${BRANCH} did not resolve to ${WANT:0:8} in 60s; the build may run against an older commit"
 
       - name: Build what was bumped
-        if: ${{ !cancelled() }}
+        # Only what was committed: a failed poll skips the commit, and building
+        # anyway rebuilds the old version under a filename that is already live.
+        if: ${{ !cancelled() && steps.commit.outputs.oid != '' }}
         env:
           GH_TOKEN: ${{ github.token }}
           BUMPED: ${{ steps.poll.outputs.bumped_list }}

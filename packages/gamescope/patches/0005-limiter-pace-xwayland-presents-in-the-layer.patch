@@ -25,7 +25,7 @@ apps without a limit, are unchanged; so is the legacy GAMESCOPE_LIMITER_FILE.
 ---
 --- a/layer/VkLayer_FROG_gamescope_wsi.cpp
 +++ b/layer/VkLayer_FROG_gamescope_wsi.cpp
-@@ -361,12 +361,18 @@ namespace GamescopeWSILayer {
+@@ -455,12 +455,18 @@ namespace GamescopeWSILayer {
  
      gamescope_limiter *proxy = nullptr;
      std::atomic<uint32_t> state = { 0 };
@@ -44,18 +44,18 @@ apps without a limit, are unchanged; so is the legacy GAMESCOPE_LIMITER_FILE.
    };
  
    // Legacy fallback for compositors without gamescope_limiter. The Mesa DRI3
-@@ -631,6 +637,7 @@ namespace GamescopeWSILayer {
+@@ -742,6 +748,7 @@ namespace GamescopeWSILayer {
      bool forceFifo;
      VkPresentModeKHR presentMode;
      VkExtent2D extent;
 +    uint64_t limiterDeadline = 0; // Next present time, when we pace an Xwayland present ourselves.
      uint32_t serverId = 0;
      bool isHdrColorspace = false;
-     bool retired = false;
-@@ -1690,6 +1697,37 @@ namespace GamescopeWSILayer {
-         }
-       }
- 
+     std::unique_ptr<std::atomic<bool>> retired = std::make_unique<std::atomic<bool>>(false);
+@@ -2160,6 +2167,37 @@ namespace GamescopeWSILayer {
+       std::vector<VkResult> driverResults(presentInfo.swapchainCount, VK_SUCCESS);
+       if (!presentInfo.pResults)
+         presentInfo.pResults = driverResults.data();
 +      // A swapchain that cannot bypass Xwayland presents through Xwayland's Present,
 +      // which gamescope cannot pace, so the frame limiter would never hold the app
 +      // back: Wine's offscreen windows (every windowed Wine game) rendered as fast as
@@ -63,10 +63,10 @@ apps without a limit, are unchanged; so is the legacy GAMESCOPE_LIMITER_FILE.
 +      // to the limiter's target here instead.
 +      uint64_t limitUntil = 0;
 +      for (uint32_t i = 0; i < presentInfo.swapchainCount; i++) {
-+        auto gamescopeSwapchain = GamescopeSwapchain::get(presentInfo.pSwapchains[i]);
++        auto gamescopeSwapchain = gamescopeSwapchains.find(presentInfo.pSwapchains[i]);
 +        if (!gamescopeSwapchain || gamescopeSwapchain->isWayland || gamescopeSwapchain->isBypassingXWayland)
 +          continue;
-+        auto gamescopeSurface = GamescopeSurface::get(gamescopeSwapchain->surface);
++        auto gamescopeSurface = gamescopeSurfaces.find(gamescopeSwapchain->surface);
 +        const auto& limiterState = gamescopeSurface ? gamescopeSurface->waylandObjects.limiterState : nullptr;
 +        const uint32_t targetFps = forceFifo && limiterState ? limiterState->targetFps.load() : 0;
 +        if (!targetFps) {
@@ -87,9 +87,9 @@ apps without a limit, are unchanged; so is the legacy GAMESCOPE_LIMITER_FILE.
 +        while (clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &until, nullptr) == EINTR) {}
 +      }
 +
-       VkResult result = pDispatch->QueuePresentKHR(queue, &presentInfo);
+       VkResult result = pDispatch.QueuePresentKHR(queue, &presentInfo);
+       const bool driverFailed = result < VK_SUCCESS;
  
-       for (uint32_t i = 0; i < presentInfo.swapchainCount; i++) {
 --- a/protocol/gamescope-limiter.xml
 +++ b/protocol/gamescope-limiter.xml
 @@ -29,7 +29,7 @@
@@ -159,7 +159,7 @@ apps without a limit, are unchanged; so is the legacy GAMESCOPE_LIMITER_FILE.
  		static std::span<CGamescopeLimiter *> GetLimiters()
 --- a/src/steamcompmgr.cpp
 +++ b/src/steamcompmgr.cpp
-@@ -1320,7 +1320,8 @@ static void update_app_target_refresh_cycle()
+@@ -1318,7 +1318,8 @@ static void update_app_target_refresh_cycle()
  {
  	int nPrevFPSLimit = g_nSteamCompMgrTargetFPS;
  	_update_app_target_refresh_cycle();
@@ -169,7 +169,7 @@ apps without a limit, are unchanged; so is the legacy GAMESCOPE_LIMITER_FILE.
  		update_runtime_info();
  }
  
-@@ -6861,7 +6862,7 @@ update_runtime_info()
+@@ -6891,7 +6892,7 @@ update_runtime_info()
  	uint32_t limiter_enabled = g_nSteamCompMgrTargetFPS != 0 ? 1 : 0;
  
  	// The file is a legacy fallback for clients without gamescope_limiter.
@@ -180,7 +180,7 @@ apps without a limit, are unchanged; so is the legacy GAMESCOPE_LIMITER_FILE.
  		return;
 --- a/src/wlserver.cpp
 +++ b/src/wlserver.cpp
-@@ -1222,12 +1222,20 @@ static void create_gamescope_swapchain_factory_v2( void )
+@@ -1306,12 +1306,20 @@ static void create_gamescope_swapchain_factory_v2( void )
  
  // Written from the steamcompmgr thread, sent from under the wlserver lock.
  static std::atomic<uint32_t> s_uFrameLimiterState = { 0 };
@@ -202,7 +202,7 @@ apps without a limit, are unchanged; so is the legacy GAMESCOPE_LIMITER_FILE.
  }
  
  uint32_t wlserver_get_frame_limiter_state( void )
-@@ -1244,9 +1252,10 @@ void wlserver_flush_frame_limiter_state( void )
+@@ -1328,9 +1336,10 @@ void wlserver_flush_frame_limiter_state( void )
  
  	wlserver_lock();
  	uint32_t uState = s_uFrameLimiterState;
@@ -216,7 +216,7 @@ apps without a limit, are unchanged; so is the legacy GAMESCOPE_LIMITER_FILE.
  }
 --- a/src/wlserver.hpp
 +++ b/src/wlserver.hpp
-@@ -333,7 +333,7 @@ void wlserver_shutdown();
+@@ -339,7 +339,7 @@ void wlserver_shutdown();
  
  void wlserver_send_gamescope_control( wl_resource *control );
  
@@ -225,5 +225,3 @@ apps without a limit, are unchanged; so is the legacy GAMESCOPE_LIMITER_FILE.
  uint32_t wlserver_get_frame_limiter_state( void );
  void wlserver_flush_frame_limiter_state( void );
  
--- 
-2.55.0

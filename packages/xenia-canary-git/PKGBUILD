@@ -1,13 +1,13 @@
 pkgname=xenia-canary-git
 pkgver=20261025.291f0c9b
-pkgrel=1
+pkgrel=2
 _commit=291f0c9be398a3e0a0e29f378cbd564fa28c55a9
 pkgdesc='Xbox 360 emulator, native aarch64 build of the canary_experimental branch (A64 CPU backend, Vulkan)'
 arch=(aarch64)
 url='https://github.com/xenia-canary/xenia-canary'
 license=(BSD-3-Clause)
 depends=(alsa-lib fontconfig glib2 gtk3 libx11 libxcb sdl2 vulkan-icd-loader)
-makedepends=(clang lld llvm cmake ninja git python)
+makedepends=(clang lld llvm cmake ninja git python glslang spirv-tools)
 provides=(xenia-canary)
 conflicts=(xenia-canary)
 # Upstream's Release config does its own ThinLTO with lld; makepkg's -flto=auto would fight it.
