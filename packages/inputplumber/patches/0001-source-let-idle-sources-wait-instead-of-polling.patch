@@ -1,0 +1,304 @@
+From: Waltteri Hooli <1420194+wahooli@users.noreply.github.com>
+Subject: [PATCH] source: let idle sources wait instead of polling
+
+Every source device runs a thread that polls its device and then sleeps
+out the rest of POLL_RATE (2.5 ms), with or without input: ~400 wakeups
+a second per source. On the AYANEO Pocket VERT (an evdev gamepad, an
+evdev keyboard and the AYANEO haptics hidraw) InputPlumber was 4.8% of
+a core and 1555 runs a second at idle, and its threads waking each
+other were most of the system's ~1000 function-call IPIs a second.
+
+Let a source say how it may wait once idle (SourceInputDevice::idle_wait):
+evdev gamepads, keyboards and touchscreens on their descriptor, which
+becomes readable with input and which poll() drains; the AYANEO haptics
+source, which only takes commands, on nothing while no rumble is
+scheduled. After a second without input or commands such a source
+sleeps for up to 20 ms instead: input still wakes it at once, commands
+(rumble, LEDs) wait at most 20 ms, and the first event or command puts
+it back on POLL_RATE. Every other source polls as before.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+diff --git a/src/input/source/evdev/gamepad.rs b/src/input/source/evdev/gamepad.rs
+index fbe2a82..6992b5e 100644
+--- a/src/input/source/evdev/gamepad.rs
++++ b/src/input/source/evdev/gamepad.rs
+@@ -1,5 +1,5 @@
+ use std::fmt::Debug;
+-use std::os::fd::AsFd;
++use std::os::fd::{AsFd, AsRawFd};
+ use std::{collections::HashMap, error::Error};
+ 
+ use evdev::{
+@@ -24,7 +24,7 @@ use crate::{
+         event::{evdev::EvdevEvent, native::NativeEvent},
+         output_event::OutputEvent,
+         source::{
+-            haptic_duration, haptic_gain_level, InputError, OutputError, SourceDriver,
++            haptic_duration, haptic_gain_level, IdleWait, InputError, OutputError, SourceDriver,
+             SourceInputDevice, SourceOutputDevice, HAPTIC_NOMINAL_PERCENT,
+         },
+     },
+@@ -575,6 +575,10 @@ impl GamepadEventDevice {
+ }
+ 
+ impl SourceInputDevice for GamepadEventDevice {
++    fn idle_wait(&self) -> IdleWait {
++        IdleWait::Fd(self.device.as_raw_fd())
++    }
++
+     /// Poll the given input device for input events
+     fn poll(&mut self) -> Result<Vec<NativeEvent>, InputError> {
+         let mut native_events = vec![];
+diff --git a/src/input/source/evdev/keyboard.rs b/src/input/source/evdev/keyboard.rs
+index abf9de5..88bfffd 100644
+--- a/src/input/source/evdev/keyboard.rs
++++ b/src/input/source/evdev/keyboard.rs
+@@ -1,5 +1,5 @@
+ use std::fmt::Debug;
+-use std::os::fd::AsFd;
++use std::os::fd::{AsFd, AsRawFd};
+ use std::{collections::HashMap, error::Error};
+ 
+ use evdev::{Device, EventType, InputEvent};
+@@ -14,7 +14,7 @@ use crate::{
+             evdev::{translator::EventTranslator, EvdevEvent},
+             native::NativeEvent,
+         },
+-        source::{InputError, SourceInputDevice, SourceOutputDevice},
++        source::{IdleWait, InputError, SourceInputDevice, SourceOutputDevice},
+     },
+     udev::device::UdevDevice,
+ };
+@@ -72,6 +72,10 @@ impl KeyboardEventDevice {
+ }
+ 
+ impl SourceInputDevice for KeyboardEventDevice {
++    fn idle_wait(&self) -> IdleWait {
++        IdleWait::Fd(self.device.as_raw_fd())
++    }
++
+     /// Poll the given input device for input events
+     fn poll(&mut self) -> Result<Vec<NativeEvent>, InputError> {
+         let mut native_events = vec![];
+diff --git a/src/input/source/evdev/touchscreen.rs b/src/input/source/evdev/touchscreen.rs
+index ae8d8b5..e2df356 100644
+--- a/src/input/source/evdev/touchscreen.rs
++++ b/src/input/source/evdev/touchscreen.rs
+@@ -1,6 +1,6 @@
+ use std::collections::HashSet;
+ use std::fmt::Debug;
+-use std::os::fd::AsFd;
++use std::os::fd::{AsFd, AsRawFd};
+ use std::{collections::HashMap, error::Error};
+ 
+ use evdev::{
+@@ -18,7 +18,7 @@ use crate::{
+     input::{
+         capability::Capability,
+         event::native::NativeEvent,
+-        source::{InputError, SourceInputDevice, SourceOutputDevice},
++        source::{IdleWait, InputError, SourceInputDevice, SourceOutputDevice},
+     },
+     udev::device::UdevDevice,
+ };
+@@ -304,6 +304,10 @@ impl TouchscreenEventDevice {
+ }
+ 
+ impl SourceInputDevice for TouchscreenEventDevice {
++    fn idle_wait(&self) -> IdleWait {
++        IdleWait::Fd(self.device.as_raw_fd())
++    }
++
+     /// Poll the given input device for input events
+     fn poll(&mut self) -> Result<Vec<NativeEvent>, InputError> {
+         let mut native_events = vec![];
+diff --git a/src/input/source/hidraw/ayaneo_haptics.rs b/src/input/source/hidraw/ayaneo_haptics.rs
+index f4b5a70..ed4f32b 100644
+--- a/src/input/source/hidraw/ayaneo_haptics.rs
++++ b/src/input/source/hidraw/ayaneo_haptics.rs
+@@ -11,7 +11,7 @@ use crate::{
+         output_capability::{Haptic, OutputCapability},
+         output_event::OutputEvent,
+         source::{
+-            HapticPulseSeries, HapticState, InputError, OutputError, SourceInputDevice,
++            HapticPulseSeries, HapticState, IdleWait, InputError, OutputError, SourceInputDevice,
+             SourceOutputDevice,
+         },
+     },
+@@ -186,6 +186,15 @@ impl SourceInputDevice for AyaneoHaptics {
+     fn get_capabilities(&self) -> Result<Vec<Capability>, InputError> {
+         Ok(vec![])
+     }
++
++    fn idle_wait(&self) -> IdleWait {
++        // A pulse series or a timed stop is advanced by poll().
++        if self.haptic_state.is_some() {
++            IdleWait::Poll
++        } else {
++            IdleWait::Commands
++        }
++    }
+ }
+ 
+ impl SourceOutputDevice for AyaneoHaptics {
+diff --git a/src/input/source/mod.rs b/src/input/source/mod.rs
+index c4e1732..751ffc4 100644
+--- a/src/input/source/mod.rs
++++ b/src/input/source/mod.rs
+@@ -2,6 +2,7 @@ use std::{
+     collections::HashSet,
+     env,
+     error::Error,
++    os::fd::RawFd,
+     str::FromStr,
+     sync::{Arc, Mutex, MutexGuard},
+     thread,
+@@ -47,6 +48,13 @@ pub mod tty;
+ const BUFFER_SIZE: usize = 2048;
+ /// Default poll rate (2.5ms/400Hz)
+ const POLL_RATE: Duration = Duration::from_micros(2500);
++/// A source that can wait (see [SourceInputDevice::idle_wait]) stops polling
++/// after this long without input or commands.
++const IDLE_AFTER: Duration = Duration::from_secs(1);
++/// The longest an idle source sleeps, so commands (rumble, LEDs) still go out.
++/// Translator events scheduled more than IDLE_AFTER past the last input can
++/// be this late too.
++const IDLE_WAIT: Duration = Duration::from_millis(20);
+ 
+ /// Possible errors for a source device client
+ #[derive(Error, Debug)]
+@@ -132,6 +140,23 @@ pub trait SourceInputDevice {
+     fn get_default_event_filter(&self) -> Result<HashSet<Capability>, InputError> {
+         Ok(HashSet::new())
+     }
++
++    /// How this source may wait once idle instead of polling every poll_rate.
++    fn idle_wait(&self) -> IdleWait {
++        IdleWait::Poll
++    }
++}
++
++/// What an idle source waits on, from [SourceInputDevice::idle_wait].
++pub enum IdleWait {
++    /// Keep polling: input arrives without a descriptor to wait on, or
++    /// something is scheduled.
++    Poll,
++    /// A descriptor that becomes readable when the device has input, and that
++    /// [SourceInputDevice::poll] drains.
++    Fd(RawFd),
++    /// Output only, with nothing scheduled: only commands can make work.
++    Commands,
+ }
+ 
+ /// A [SourceOutputDevice] is a device implementation that can handle output events
+@@ -394,6 +419,7 @@ impl<T: SourceInputDevice + SourceOutputDevice + Send + 'static> SourceDriver<T>
+                 if let Err(e) = implementation.update_event_filter(event_filter.clone()) {
+                     log::error!("Failed to set default event filter for {device_id}: {e}");
+                 };
++                let mut last_active = Instant::now();
+                 loop {
+                     let poll_time_start = Instant::now();
+ 
+@@ -420,6 +446,9 @@ impl<T: SourceInputDevice + SourceOutputDevice + Send + 'static> SourceDriver<T>
+                         let poll_span = context.metrics_mut().get_mut("source_poll").unwrap();
+                         poll_span.finish();
+                     }
++                    if !events.is_empty() {
++                        last_active = Instant::now();
++                    }
+ 
+                     // Process each event
+                     for mut event in events.into_iter() {
+@@ -459,13 +488,34 @@ impl<T: SourceInputDevice + SourceOutputDevice + Send + 'static> SourceDriver<T>
+                     }
+ 
+                     // Receive commands/output events
+-                    if let Err(e) = SourceDriver::receive_commands(
++                    match SourceDriver::receive_commands(
+                         &mut rx,
+                         &mut implementation,
+                         &mut event_filter,
+                     ) {
+-                        log::debug!("Error receiving commands: {:?}", e);
+-                        break;
++                        Ok(true) => last_active = Instant::now(),
++                        Ok(false) => (),
++                        Err(e) => {
++                            log::debug!("Error receiving commands: {:?}", e);
++                            break;
++                        }
++                    }
++
++                    // Idle: sleep until the device has input, for at most
++                    // IDLE_WAIT, rather than waking every poll_rate for nothing.
++                    if last_active.elapsed() >= IDLE_AFTER {
++                        match implementation.idle_wait() {
++                            IdleWait::Fd(fd) => {
++                                if wait_readable(fd, IDLE_WAIT) {
++                                    continue;
++                                }
++                            }
++                            IdleWait::Commands => {
++                                thread::sleep(IDLE_WAIT);
++                                continue;
++                            }
++                            IdleWait::Poll => (),
++                        }
+                     }
+ 
+                     let poll_time = poll_time_start.elapsed();
+@@ -490,12 +540,12 @@ impl<T: SourceInputDevice + SourceOutputDevice + Send + 'static> SourceDriver<T>
+     }
+ 
+     /// Read commands sent to this device from the channel until it is
+-    /// empty.
++    /// empty. Returns whether there were any.
+     fn receive_commands(
+         rx: &mut mpsc::Receiver<SourceCommand>,
+         implementation: &mut MutexGuard<'_, T>,
+         event_filter: &mut HashSet<Capability>,
+-    ) -> Result<(), Box<dyn Error>> {
++    ) -> Result<bool, Box<dyn Error>> {
+         const MAX_COMMANDS: u8 = 64;
+         let mut commands_processed = 0;
+         loop {
+@@ -554,7 +604,7 @@ impl<T: SourceInputDevice + SourceOutputDevice + Send + 'static> SourceDriver<T>
+                     }
+                 },
+                 Err(e) => match e {
+-                    TryRecvError::Empty => return Ok(()),
++                    TryRecvError::Empty => return Ok(commands_processed > 0),
+                     TryRecvError::Disconnected => {
+                         log::debug!("Receive channel disconnected");
+                         return Err("Receive channel disconnected".into());
+@@ -565,12 +615,28 @@ impl<T: SourceInputDevice + SourceOutputDevice + Send + 'static> SourceDriver<T>
+             // Only process MAX_COMMANDS messages at a time
+             commands_processed += 1;
+             if commands_processed >= MAX_COMMANDS {
+-                return Ok(());
++                return Ok(true);
+             }
+         }
+     }
+ }
+ 
++/// Wait until `fd` is readable or `timeout` has passed. False if poll failed or
++/// the descriptor reports an error or hangup, so the caller sleeps as before
++/// instead of spinning on a dead device.
++fn wait_readable(fd: RawFd, timeout: Duration) -> bool {
++    use nix::libc::{poll, pollfd, POLLERR, POLLHUP, POLLIN, POLLNVAL};
++    let mut pfd = pollfd {
++        fd,
++        events: POLLIN,
++        revents: 0,
++    };
++    let ms = timeout.as_millis().min(i32::MAX as u128) as i32;
++    // SAFETY: one valid pollfd that outlives the call.
++    let ret = unsafe { poll(&mut pfd, 1, ms) };
++    ret >= 0 && pfd.revents & (POLLERR | POLLHUP | POLLNVAL) == 0
++}
++
+ pub(crate) trait SourceDeviceCompatible {
+     /// Returns a copy of the UdevDevice
+     fn get_device_ref(&self) -> DeviceInfoRef<'_>;

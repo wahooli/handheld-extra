@@ -31,6 +31,10 @@ export interface SettingsStatus {
   ControllerType: string;
   ControllerTypes: [string, string][];
   ControllerTargets: string[];
+  // Absent on images without usbhid polling control.
+  ControllerPollAvailable?: boolean;
+  ControllerPollMs?: number;
+  ControllerPollRates?: [number, string][];
   CalibrationSupported: boolean;
   CalibrationSaved: boolean;
 }
@@ -343,6 +347,18 @@ export function SystemTab() {
             selectedOption={status.ControllerType}
             disabled={busy}
             onChange={(opt) => void set("controller", opt.data)}
+          />
+        </PanelSectionRow>
+      )}
+      {status.ControllerPollAvailable && status.ControllerPollRates && (
+        <PanelSectionRow>
+          <DropdownItem
+            label="Controller polling rate"
+            description="How often the controller is read. Lower saves power, higher shaves input latency. The controller reconnects for a moment."
+            rgOptions={status.ControllerPollRates.map(([data, label]) => ({ data, label }))}
+            selectedOption={status.ControllerPollMs}
+            disabled={busy}
+            onChange={(opt) => void set("controller_poll", opt.data)}
           />
         </PanelSectionRow>
       )}

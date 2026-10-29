@@ -24,6 +24,7 @@ jobs:
         id: poll
         env:
           GH_TOKEN: ${{ github.token }}
+          IMAGE: archlinux:base
         run: ./scripts/poll-upstreams.sh --bump
 
       - name: Commit the bumps

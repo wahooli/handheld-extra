@@ -577,6 +577,8 @@ class Plugin:
             args = ("stealth-boot", "on" if value else "off")
         elif what == "controller":
             args = ("controller", str(value))
+        elif what == "controller_poll":
+            args = ("controller-poll", str(int(value)))
         else:
             return {"ok": False, "error": f"{what!r} is not a setting"}
         out, error = await _settings(*args)

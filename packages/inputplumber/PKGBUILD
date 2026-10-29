@@ -1,6 +1,6 @@
 pkgname=inputplumber
 pkgver=0.83.0
-pkgrel=1
+pkgrel=3
 _commit=4ed1f50c7801e4f91fd17ce1a7b2b9d8d8b82e69
 _appname=InputPlumber
 pkgdesc='Input router and remapper daemon for handheld gaming devices'
@@ -41,8 +41,15 @@ prepare() {
     echo "::  applied: ${p}"
   done
 
+  # Our own fixes, on top of armada's. No fuzz, as in gamescope.
+  for f in "${startdir}"/patches/*.patch; do
+    [ -e "${f}" ] || continue
+    patch -p1 --batch --forward -F0 < "${f}" || { echo "::  FAILED: local ${f##*/}"; return 1; }
+    echo "::  applied local: ${f##*/}"
+  done
+
   export RUSTUP_TOOLCHAIN=stable
-  cargo fetch --locked --target aarch64-unknown-linux-gnu
+  cargo fetch --target aarch64-unknown-linux-gnu
 }
 
 build() {

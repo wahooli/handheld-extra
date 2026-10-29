@@ -1,7 +1,7 @@
 _pkgname=MangoHud
 pkgname=mangohud
 pkgver=0.8.4
-pkgrel=9
+pkgrel=10
 pkgdesc='Vulkan overlay for FPS/temps/CPU-GPU load, plus mangoapp for gamescope'
 arch=('aarch64')
 url="https://github.com/flightlessmango/MangoHud"
@@ -17,13 +17,15 @@ source=("$pkgname-$pkgver.tar.xz::https://github.com/flightlessmango/MangoHud/re
         '0002-battery-match-power-supply-type-not-name.patch'
         '0003-winesync-check-the-target-pid-not-our-own.patch'
         '0004-frame_gen-show-real-and-generated-frame-rate.patch'
-        '0005-framegen_probe-cap-the-real-frame-rate-MANGOHUD_PROB.patch')
+        '0005-framegen_probe-cap-the-real-frame-rate-MANGOHUD_PROB.patch'
+        '0006-mangoapp-throttle-overlay-to-one-render-per-game-frame.patch')
 b2sums=('06bdfcd26e14ff544e4dea4e39b8f7da6119d87fc7e14f381cf8c47bba69508a4768b8584600424adb8ca2a2f6f4c2d84d63683addeb83bd0dd9a1e055febdb8'
         '11330716f9bbbb87d21e1f5d1f538ed0c55ee80b1c49668822a61e5eb7c48f6f3419e47c447542f9e0d320047dc77388c83af52fe551c70d1203562cdfd7ed4e'
         '96b4afce0d5cd6224e8b35187f25bc021b63117454c2bee6e80f6d26d57c5541c3ef9cd52cc91c63c0863345a34f9d4fe94def13cc43c7295bdf56779e3f3b7d'
         '6eeab919838c2cfd775a88d5438ec76eda18d9b8da8ba84c7818eb5c68b5eb0a431c3ff4507b8374f504fd84440c1ad4ae39759ce2f573a0ee78da80d7ace2de'
         '090094027b3f73eb1cb314b8f6e54ef3b098b6cf8efd607bc9ff2dbed53de590e4a43d2dabf526518faa777b6d0acf3044e12b239a17425d9fbcf577ae264de6'
-        'f9b94ae93a38087023732d77c20c2c03a9d1e201433d9bc1a4008b52dc6c2f8249c0c3c4623d49a589c7e2bd4bdb39427723db202051e5eeb1c1472f8e4ebb43')
+        'f9b94ae93a38087023732d77c20c2c03a9d1e201433d9bc1a4008b52dc6c2f8249c0c3c4623d49a589c7e2bd4bdb39427723db202051e5eeb1c1472f8e4ebb43'
+        '970895d538902ea07b9bc46a1ab2998b3b152293a86928cbd3e15d281a9b4ddc7c8ccb51a9275d79a816445131987c4dcd019b6d5c93c1a0a977c554bd0b2eb4')
 
 prepare() {
     cd "$_pkgname-v$pkgver"
@@ -40,6 +42,10 @@ prepare() {
     patch -Np1 -i "$srcdir/0004-frame_gen-show-real-and-generated-frame-rate.patch"
 
     patch -Np1 -i "$srcdir/0005-framegen_probe-cap-the-real-frame-rate-MANGOHUD_PROB.patch"
+
+    # Upstream 2c1dc52, after 0.8.4: without it mangoapp redraws the overlay every
+    # loop pass, ~1300 X11 round trips/s with Steam idle.
+    patch -Np1 -i "$srcdir/0006-mangoapp-throttle-overlay-to-one-render-per-game-frame.patch"
 }
 
 build() {
