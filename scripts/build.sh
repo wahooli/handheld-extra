@@ -21,35 +21,9 @@ all_packages() {
     done
 }
 
-changed_packages() {
-    local ref="$1" p
-    if [ -z "${ref}" ] || [ "${ref}" = "0000000000000000000000000000000000000000" ]; then
-        echo "no previous commit to diff against; treating every package as changed" >&2
-        all_packages
-        return 0
-    fi
-    git rev-parse --verify "${ref}^{commit}" >/dev/null 2>&1 || {
-        echo "!! ${ref} is not a commit in this clone" >&2
-        echo "   Most likely a force-push: github.event.before names the orphaned" >&2
-        echo "   head, which fetch-depth 2 never fetches. Refusing to diff against" >&2
-        echo "   it, because every package would look changed." >&2
-        echo "   Build what actually changed instead:" >&2
-        echo "     gh workflow run build.yml -f packages='<names>'" >&2
-        return 1; }
-    for p in $(all_packages); do
-        git diff --quiet "${ref}" HEAD -- "packages/${p}" \
-            ":(exclude)packages/${p}/upstream.env" \
-            ":(exclude)packages/${p}/README.md" || echo "${p}"
-    done
-}
-
 case "${1:-}" in
     --all)     mapfile -t TARGETS < <(all_packages); shift ;;
-    --changed)
-        _changed="$(changed_packages "${2:?--changed needs a git ref}")" || exit 1
-        mapfile -t TARGETS < <(printf '%s' "${_changed}")
-        shift 2 ;;
-    "")        echo "usage: $0 <package>... | --all | --changed <ref>" >&2; exit 1 ;;
+    "")        echo "usage: $0 <package>... | --all" >&2; exit 1 ;;
     *)         TARGETS=("$@") ;;
 esac
 

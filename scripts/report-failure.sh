@@ -15,9 +15,9 @@ Run ${RUN_NUMBER:-?}: ${RUN_URL:-(no run url)}
 The database was only touched if the failure happened during publish; otherwise
 devices keep whatever \`[${REPO_NAME}]\` currently serves.
 
-**One package failing does not stop the others.** \`makepkg-each.sh\` builds each
-package in its own subshell and collects failures at the end, so the rest of the
-run was still built and published. The job summary lists what came out.
+**One package failing does not stop the others.** Each package builds in its own
+job and the publish job takes whatever succeeded. The job summary lists what came
+out. Anything still unpublished is retried on every push and every poll.
 
 Common causes here, in rough order of likelihood:
 

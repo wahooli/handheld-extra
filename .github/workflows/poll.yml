@@ -29,7 +29,7 @@ jobs:
 
       - name: Commit the bumps
         id: commit
-        if: ${{ steps.poll.outputs.bumped != '0' || steps.poll.outputs.tracked != '0' }}
+        if: ${{ !cancelled() && (steps.poll.outputs.bumped != '0' || steps.poll.outputs.tracked != '0') }}
         env:
           GH_TOKEN: ${{ github.token }}
           BUMPED: ${{ steps.poll.outputs.bumped_list }}
@@ -79,7 +79,7 @@ jobs:
           echo "oid=$(cat new-oid.txt)" >> "$GITHUB_OUTPUT"
 
       - name: Wait for the branch to resolve to the new commit
-        if: ${{ steps.commit.outputs.oid != '' }}
+        if: ${{ !cancelled() && steps.commit.outputs.oid != '' }}
         env:
           GH_TOKEN: ${{ github.token }}
           WANT: ${{ steps.commit.outputs.oid }}
@@ -93,23 +93,12 @@ jobs:
           done
           echo "::warning::${BRANCH} did not resolve to ${WANT:0:8} in 60s; the build may run against an older commit"
 
-      - name: Build what was bumped
-        # Only what was committed: a failed poll skips the commit, and building
-        # anyway rebuilds the old version under a filename that is already live.
-        if: ${{ !cancelled() && steps.commit.outputs.oid != '' }}
+      - name: Build whatever is not published yet
+        if: ${{ !cancelled() }}
         env:
           GH_TOKEN: ${{ github.token }}
-          BUMPED: ${{ steps.poll.outputs.bumped_list }}
           BRANCH: ${{ github.ref_name }}
-        run: |
-          set -euo pipefail
-          targets="$(printf '%s' "${BUMPED}" | tr ' ' '\n' | grep -v '^$' | sort -u | tr '\n' ' ' | sed 's/ $//' || true)"
-          if [ -z "${targets}" ]; then
-            echo "==> nothing was bumped; nothing to build"
-            exit 0
-          fi
-          echo "==> dispatching build for: ${targets}"
-          gh workflow run build.yml --ref "${BRANCH}" -f packages="${targets}"
+        run: gh workflow run build.yml --ref "${BRANCH}"
 
       - name: Summary
         if: ${{ !cancelled() }}

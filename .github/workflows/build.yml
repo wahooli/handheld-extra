@@ -4,9 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       packages:
-        description: 'Space-separated package names, or "all"'
+        description: 'Space-separated package names, "all", or empty for everything not published yet'
         type: string
-        default: all
+        default: ''
       skip_publish:
         description: 'Build only; do not touch R2'
         type: boolean
@@ -33,15 +33,40 @@ jobs:
   check:
     uses: ./.github/workflows/check.yml
 
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      packages: ${{ steps.plan.outputs.packages }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Pick packages
+        id: plan
+        env:
+          PACKAGES: ${{ inputs.packages }}
+        run: |
+          set -euo pipefail
+          case "${PACKAGES}" in
+            '')  list="$(./scripts/unpublished-packages.sh)" ;;
+            all) list="$(git ls-files 'packages/*/PKGBUILD' | xargs -rn1 dirname | xargs -rn1 basename)" ;;
+            *)   list="$(tr -s ' ' '\n' <<< "${PACKAGES}")" ;;
+          esac
+          json="$(jq -Rnc '[inputs | select(length > 0)]' <<< "${list}")"
+          echo "==> ${json}"
+          echo "packages=${json}" >> "$GITHUB_OUTPUT"
+
   build:
-    needs: check
+    needs: [check, plan]
+    if: ${{ needs.plan.outputs.packages != '[]' }}
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        package: ${{ fromJSON(needs.plan.outputs.packages) }}
 
     steps:
       - uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
 
       - name: Cache key inputs
         id: keys
@@ -73,6 +98,98 @@ jobs:
           path: ~/.cache/builder-image.tar
           key: builder-${{ hashFiles('Dockerfile') }}-${{ steps.keys.outputs.week }}
 
+      - name: Restore ccache
+        uses: actions/cache/restore@v6
+        with:
+          path: .ccache
+          key: ccache-${{ matrix.package }}-${{ github.sha }}
+          restore-keys: ccache-${{ matrix.package }}-
+
+      - name: Build
+        env:
+          PKG: ${{ matrix.package }}
+        run: ./scripts/build.sh "${PKG}"
+
+      - name: Save ccache
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        uses: actions/cache/save@v6
+        with:
+          path: .ccache
+          key: ccache-${{ matrix.package }}-${{ github.sha }}
+
+      - name: Bundle packages
+        env:
+          PKG: ${{ matrix.package }}
+        run: |
+          set -euo pipefail
+          (cd out && tar -cf "../packages-${PKG}.tar" ./*.pkg.tar.zst)
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: packages-${{ matrix.package }}
+          path: packages-${{ matrix.package }}.tar
+          retention-days: 14
+
+  publish:
+    needs: [plan, build]
+    if: ${{ !cancelled() && needs.build.result != 'skipped' }}
+    runs-on: ubuntu-24.04-arm
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: packages-*
+          path: dl
+          merge-multiple: true
+
+      - name: Unpack packages
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          for t in dl/*.tar; do
+            [ -e "${t}" ] || continue
+            tar -xf "${t}" -C out
+          done
+
+      - name: Job summary
+        run: |
+          set -euo pipefail
+          if compgen -G 'out/*.pkg.tar.zst' > /dev/null; then
+            {
+              echo "### Packages built"
+              echo
+              echo "| package | size |"
+              echo "|---|---|"
+              for f in out/*.pkg.tar.zst; do
+                echo "| \`$(basename "$f")\` | $(du -h "$f" | cut -f1) |"
+              done
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "Nothing was built." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Cache key inputs
+        id: keys
+        run: echo "week=$(date -u +%Y-%U)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore builder image
+        uses: actions/cache/restore@v6
+        with:
+          path: ~/.cache/builder-image.tar
+          key: builder-${{ hashFiles('Dockerfile') }}-${{ steps.keys.outputs.week }}
+
+      - name: Load or build the builder image
+        run: |
+          set -euo pipefail
+          if [ -f ~/.cache/builder-image.tar ]; then
+            docker load -i ~/.cache/builder-image.tar
+          else
+            docker build -t linux-handheld-builder:latest .
+          fi
+
       - name: Install host tools
         run: |
           set -euo pipefail
@@ -87,75 +204,6 @@ jobs:
           unzip -q -j /tmp/rclone.zip "*/rclone" -d /tmp
           sudo install -m755 /tmp/rclone /usr/local/bin/rclone
           rclone version | sed -n 1p
-
-      - name: Restore ccache
-        uses: actions/cache/restore@v6
-        with:
-          path: .ccache
-          key: ccache-${{ github.sha }}
-          restore-keys: ccache-
-
-      - name: Build
-        id: build
-        run: |
-          set -euo pipefail
-          if [ "${{ github.event_name }}" = workflow_dispatch ]; then
-            if [ "${{ inputs.packages }}" = all ]; then
-              ./scripts/build.sh --all
-            else
-              # shellcheck disable=SC2086
-              ./scripts/build.sh ${{ inputs.packages }}
-            fi
-          else
-            BASE="${{ github.event.before }}"
-            if ! git rev-parse --verify "${BASE}^{commit}" >/dev/null 2>&1; then
-              echo "::warning::${BASE} is not in this clone (force-push?); diffing against HEAD^ instead"
-              BASE="$(git rev-parse HEAD^)"
-            fi
-            ./scripts/build.sh --changed "${BASE}"
-          fi
-
-      - name: Save ccache
-        if: ${{ !cancelled() }}
-        continue-on-error: true
-        uses: actions/cache/save@v6
-        with:
-          path: .ccache
-          key: ccache-${{ github.sha }}
-
-      - name: Job summary
-        if: ${{ !cancelled() }}
-        run: |
-          set -euo pipefail
-          if compgen -G 'out/*.pkg.tar.zst' > /dev/null; then
-            {
-              echo "### Packages built"
-              echo
-              echo "| package | size |"
-              echo "|---|---|"
-              for f in out/*.pkg.tar.zst; do
-                echo "| \`$(basename "$f")\` | $(du -h "$f" | cut -f1) |"
-              done
-            } >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo "Nothing was built — no package directory changed." >> "$GITHUB_STEP_SUMMARY"
-          fi
-
-      - name: Bundle packages
-        if: ${{ !cancelled() }}
-        run: |
-          set -euo pipefail
-          if compgen -G 'out/*.pkg.tar.zst' > /dev/null; then
-            (cd out && tar -cf ../packages.tar ./*.pkg.tar.zst)
-          fi
-
-      - uses: actions/upload-artifact@v7
-        if: ${{ !cancelled() }}
-        with:
-          name: packages-${{ github.run_number }}
-          path: packages.tar
-          retention-days: 14
-          if-no-files-found: ignore
 
       - name: Publish to R2
         if: ${{ !inputs.skip_publish }}
@@ -174,8 +222,14 @@ jobs:
             echo "nothing built; not touching the database"
           fi
 
+  report:
+    needs: [build, publish]
+    if: ${{ !cancelled() && contains(needs.*.result, 'failure') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
       - name: Report failure
-        if: failure()
         env:
           GH_TOKEN: ${{ github.token }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}

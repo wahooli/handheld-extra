@@ -18,6 +18,10 @@ require_rate_limit "$((
 
 BEHIND=(); ERRORS=(); BUMPED=(); TRACKED=(); ABIDRIFT=(); CHECKED=0
 
+SNAP="$(mktemp -d)"; trap 'rm -rf "${SNAP}"' EXIT
+snapshot() { rm -rf "${SNAP:?}/pkg"; cp -a "packages/$1" "${SNAP}/pkg"; }
+restore()  { rm -rf "packages/$1"; mv "${SNAP}/pkg" "packages/$1"; }
+
 for conf in packages/*/upstream.env; do
     pkg="$(basename "$(dirname "${conf}")")"
     TRACK=; GITHUB_REPO=; GIT_URL=; GIT_BRANCH=; OCI_IMAGE=; OCI_TAG_RE=; AUR_PKG=; ALARM_REPO=; ALARM_PKG=; CURRENT=; INCLUDE_PRERELEASE=
@@ -41,8 +45,10 @@ for conf in packages/*/upstream.env; do
                     "${pkg}" "pin" "${ABI_PIN_PKG}" "${pinned}" "${avail}"
                 abirc=0
                 if [ -n "${BUMP}" ] && [ "${ABI_PIN_AUTOBUMP:-no}" = yes ]; then
+                    snapshot "${pkg}"
                     ./scripts/bump-abi-pin.sh "${pkg}" >/tmp/abibump.$$ 2>&1 || abirc=$?
                     sed 's/^/      /' /tmp/abibump.$$; rm -f /tmp/abibump.$$
+                    [ "${abirc}" = 0 ] || restore "${pkg}"
                 fi
                 case "${abirc}" in
                     0) if [ -n "${BUMP}" ] && [ "${ABI_PIN_AUTOBUMP:-no}" = yes ]; then
@@ -93,6 +99,7 @@ for conf in packages/*/upstream.env; do
 
         if [ -n "${BUMP}" ]; then
             rc=0
+            snapshot "${pkg}"
             ./scripts/bump-package.sh "${pkg}" >/tmp/bump.$$ 2>&1 || rc=$?
             if [ "${rc}" = 0 ]; then
                 sed 's/^/      /' /tmp/bump.$$
@@ -107,6 +114,7 @@ for conf in packages/*/upstream.env; do
                 continue
             fi
             sed 's/^/      /' /tmp/bump.$$; rm -f /tmp/bump.$$
+            restore "${pkg}"
             [ "${rc}" = 2 ] || ERRORS+=("${pkg}: bump failed")
         fi
         case "${TRACK}" in
