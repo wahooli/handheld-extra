@@ -7,6 +7,8 @@ import {
   ToggleField,
   DialogButton,
   Focusable,
+  GamepadButton,
+  GamepadEvent,
   Router,
   staticClasses,
 } from "@decky/ui";
@@ -160,8 +162,18 @@ function Content() {
   const tabs = TABS.filter(({ id }) => (id !== "framegen" || lsfgReady) && (id !== "system" || settingsAvailable));
   const active: Tab = tabs.some(({ id }) => id === tab) ? tab : "performance";
 
+  // L1/R1 step through the tabs from anywhere in the panel, stopping at the ends
+  // as Steam's own tabs do.
+  const onBumper = (evt: GamepadEvent) => {
+    const { button, is_repeat } = evt.detail;
+    const step = button === GamepadButton.BUMPER_LEFT ? -1 : button === GamepadButton.BUMPER_RIGHT ? 1 : 0;
+    if (!step || is_repeat) return;
+    const next = tabs[tabs.findIndex(({ id }) => id === active) + step];
+    if (next) choose(next.id);
+  };
+
   return (
-    <>
+    <Focusable onButtonDown={onBumper}>
       {tabs.length > 1 && (
         <PanelSection>
           <PanelSectionRow>
@@ -188,7 +200,7 @@ function Content() {
       {active === "performance" && <PerformanceTab />}
       {active === "framegen" && <FrameGenTab />}
       {active === "system" && <SystemTab />}
-    </>
+    </Focusable>
   );
 }
 

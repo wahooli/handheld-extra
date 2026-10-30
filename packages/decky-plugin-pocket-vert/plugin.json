@@ -1,0 +1,14 @@
+{
+  "name": "Pocket VERT Controls",
+  "author": "arch-arm64",
+  "flags": [],
+  "api_version": 1,
+  "publish": {
+    "tags": [
+      "controller",
+      "input"
+    ],
+    "description": "What the AYANEO Pocket VERT's touch areas and D-pad send: sticks, mouse or off, with per-game profiles, via org.handheld.Settings1.",
+    "image": "https://opengraph.githubassets.com/1/SteamDeckHomebrew/PluginLoader"
+  }
+}

@@ -1,0 +1,38 @@
+pkgname=decky-plugin-pocket-vert
+pkgver=1.1.0
+pkgrel=1
+pkgdesc='Decky plugin: what the AYANEO Pocket VERT'"'"'s touch areas and D-pad send, via org.handheld.Settings1'
+arch=('aarch64')
+url='https://github.com/SteamDeckHomebrew/decky-loader'
+license=('GPL-2.0-or-later')
+depends=('python')
+makedepends=('nodejs' 'npm' 'pnpm')
+source=()
+sha256sums=()
+
+build() {
+    cd "${startdir}"
+
+    export HOME="${srcdir}/.home"
+    export XDG_CACHE_HOME="${srcdir}/.cache"
+    export npm_config_cache="${srcdir}/.npm"
+    export PNPM_HOME="${srcdir}/.pnpm"
+    mkdir -p "${HOME}" "${XDG_CACHE_HOME}" "${PNPM_HOME}"
+
+    pnpm install --dangerously-allow-all-builds
+    pnpm run build
+
+    [ -f dist/index.js ] \
+        || { echo "PKGBUILD: rollup produced no dist/index.js" >&2; return 1; }
+}
+
+package() {
+    cd "${startdir}"
+
+    local dest="${pkgdir}/usr/share/decky-plugins/Pocket VERT Controls"
+    install -d "${dest}"
+
+    install -Dm0644 plugin.json package.json main.py -t "${dest}/"
+    cp -a dist "${dest}/dist"
+    rm -f "${dest}/dist/"*.map
+}

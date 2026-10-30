@@ -34,6 +34,7 @@ out/
 packages/*/pkg/
 packages/*/src/
 !packages/decky-plugin-handheld-control/src/
+!packages/decky-plugin-pocket-vert/src/
 
 packages/*/*.tar.gz
 packages/*/*.tar.xz

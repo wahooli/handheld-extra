@@ -1,0 +1,43 @@
+From: Waltteri Hooli <1420194+wahooli@users.noreply.github.com>
+Subject: [PATCH] udev: match hidraw hide rules to their HID device
+
+A hidraw hide rule matched the kernel name alone (KERNEL=="hidraw3").
+unhide_device() looks the device up before deleting its rules, so a source
+that is removed (re-enumerated, unbound) leaves its rules behind, and the
+next device to get that hidraw number is hidden too. On the AYANEO Pocket
+VERT the controller came up as hidraw3, re-enumerated as hidraw5 during
+boot, and InputPlumber's own deck-uhid target then got hidraw3: mode 000,
+so Steam saw no controller until InputPlumber restarted.
+
+Match the parent HID device as well, as the input rules match their
+parent and ids. Its name carries an instance number that is new on every
+enumeration (0003:4001:0428.0008), so a leftover rule cannot match another
+device. SUBSYSTEM instead of SUBSYSTEMS, since udev matches all parent
+keys against one device and the HID parent is in "hid".
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+--- a/src/udev/device.rs
++++ b/src/udev/device.rs
+@@ -791,9 +791,18 @@
+         let match_rule = match subsystem.as_str() {
+             "hidraw" => {
+                 let name = self.name.clone();
+-                Some(format!(
+-                    r#"ACTION=="add|change", SUBSYSTEMS=="{subsystem}", KERNEL=="{name}""#
+-                ))
++                // The parent's instance number is new on every enumeration, so a
++                // stale rule cannot hide whatever reuses its hidraw number.
++                // SUBSYSTEM, not SUBSYSTEMS: udev matches all parent keys
++                // against one device.
++                match self.get_parent_device_name() {
++                    Some(parent) => Some(format!(
++                        r#"ACTION=="add|change", SUBSYSTEM=="{subsystem}", KERNEL=="{name}", KERNELS=="{parent}""#
++                    )),
++                    None => Some(format!(
++                        r#"ACTION=="add|change", SUBSYSTEMS=="{subsystem}", KERNEL=="{name}""#
++                    )),
++                }
+             }
+             "input" => {
+                 let rule_fn = || {

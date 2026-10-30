@@ -1,6 +1,6 @@
 {
   "name": "handheld-control",
-  "version": "1.11.10",
+  "version": "1.11.11",
   "description": "Fan curve, CPU clock pin and power profile control backed by org.handheld.Power1",
   "type": "module",
   "scripts": {
