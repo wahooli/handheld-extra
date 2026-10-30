@@ -125,7 +125,7 @@ if grep -qE "^(sha256sums|sha512sums|b2sums|md5sums)=\(" "${D}/PKGBUILD" \
     echo "    refreshing checksums with updpkgsums"
     docker run --rm -v "${HERE}:/work" -w "/work/${D}" --user root "${IMAGE}" bash -c '
         pacman -Sy --noconfirm --needed pacman-contrib >/dev/null 2>&1
-        useradd -m u 2>/dev/null || true; chown -R u /work
+        useradd -m u 2>/dev/null || true; chown -R u /work/'"${D}"'
         su u -c "cd /work/'"${D}"' && updpkgsums"' 2>&1 | tail -3
     docker run --rm -v "${HERE}:/w" --user root alpine:3 chown -R "$(id -u):$(id -g)" /w/packages >/dev/null 2>&1
 else
