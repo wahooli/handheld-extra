@@ -1,5 +1,5 @@
 pkgname=vulkan-freedreno
-pkgver=26.2.5
+pkgver=26.2.6
 _pkgver=${pkgver/[a-z]/-&}
 pkgrel=1.1
 epoch=1

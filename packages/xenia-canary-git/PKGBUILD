@@ -1,7 +1,7 @@
 pkgname=xenia-canary-git
-pkgver=20261025.291f0c9b
-pkgrel=2
-_commit=291f0c9be398a3e0a0e29f378cbd564fa28c55a9
+pkgver=20261031.44e6489c
+pkgrel=1
+_commit=44e6489cf87567b5dc9c982207765d722b71b966
 pkgdesc='Xbox 360 emulator, native aarch64 build of the canary_experimental branch (A64 CPU backend, Vulkan)'
 arch=(aarch64)
 url='https://github.com/xenia-canary/xenia-canary'
