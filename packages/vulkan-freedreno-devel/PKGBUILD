@@ -1,7 +1,7 @@
 pkgname=vulkan-freedreno-devel
-pkgver=20261023.8e557130
+pkgver=20261102.b1a8996c
 pkgrel=1
-_commit=8e557130bda2adcb87535aabe23bca0d68ff77b6
+_commit=b1a8996cb336f8398b06583c399fae821523152d
 pkgdesc='Open-source Vulkan driver for Adreno GPUs (turnip) from mesa main, installed beside vulkan-freedreno and selectable per game with turnip-devel'
 arch=(aarch64)
 url='https://docs.mesa3d.org/drivers/freedreno.html'
