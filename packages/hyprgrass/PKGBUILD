@@ -1,9 +1,9 @@
 pkgname=hyprgrass
 _srcver=0.8.2
-_hyprver=0.57.0
+_hyprver=0.57.1
 pkgver="${_srcver}+hypr${_hyprver}"
-pkgrel=2
-_commit=8ca1af717d5b4ea1215a781df52bcef02d7b15e6
+pkgrel=1
+_commit=355ee6e6e95bdfdf051d8f23eba4973ae6a21bd7
 pkgdesc="Touchscreen gesture plugin for Hyprland (built against ${_hyprver})"
 arch=('aarch64')
 url='https://github.com/horriblename/hyprgrass'
