@@ -1,7 +1,7 @@
 pkgname=vulkan-freedreno
 pkgver=26.3.1
 _pkgver=${pkgver/[a-z]/-&}
-pkgrel=2.1
+pkgrel=3.1
 epoch=1
 pkgdesc='Open-source Vulkan driver for Adreno GPUs (turnip): the mesa release ALARM ships plus community patches, with a -perf variant selectable per game'
 arch=(aarch64)
